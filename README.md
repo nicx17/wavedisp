@@ -2,6 +2,16 @@
   <img src="assets/logo.svg" alt="WaveDisp Logo" width="150" />
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/Vite-8-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Raspberry%20Pi-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white" alt="Raspberry Pi" />
+  <img src="https://img.shields.io/badge/Spotify-1DB954?style=for-the-badge&logo=spotify&logoColor=white" alt="Spotify" />
+</p>
+
 # WaveDisp
 
 WaveDisp is a comprehensive UI and control dashboard for Raspberry Pi LED matrix displays, built and tested for the Waveshare RGB-Matrix-Px-64x64 P2.5 64x64 HUB75 panel. It pairs a FastAPI backend with a Vite/React frontend dashboard, allowing you to seamlessly switch display modes, tune rendering settings, draw pixels, generate QR codes, and show Spotify album art directly from any browser.
