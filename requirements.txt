@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+pillow
+requests
+spotipy
+segno
+python-dotenv

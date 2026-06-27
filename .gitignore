@@ -1,0 +1,31 @@
+3# Environment
+venv/
+.venv/
+.env
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+dashboard/node_modules/
+dist/
+dashboard/dist/
+.npm/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Runtime/local state
+backend/config.json
+backend/config.json.tmp
+backend/.spotify_caches/
+certs/*
+!certs/.gitkeep
+
+# Generated media and archives
+docs/archive/
+temp_bad_apple.mp4
+backend/bad_apple.bin
+wavedisp.service
+.playwright-cli

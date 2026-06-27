@@ -1,0 +1,15 @@
+[Unit]
+Description=WaveDisp LED Matrix Controller
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/wavedisp
+EnvironmentFile=-/opt/wavedisp/.env
+ExecStart=/opt/wavedisp/.venv/bin/python /opt/wavedisp/backend/main.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
