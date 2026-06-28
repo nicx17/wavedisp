@@ -35,7 +35,9 @@ body.dark-mode {
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
   background-color: var(--bg-color);
   color: var(--text-primary);
   display: flex;
@@ -45,7 +47,9 @@ body {
   /* Funky half-tone grid background typical of neo-brutalism */
   background-image: radial-gradient(var(--struct) 2px, transparent 2px);
   background-size: 32px 32px;
-  transition: background-color 0.3s, color 0.3s;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
   overflow-y: scroll; /* Forces scrollbar track to prevent layout jumping */
 }
 
@@ -101,7 +105,10 @@ body {
   padding: 2rem;
   box-shadow: var(--shadow);
   animation: slideUp 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-  transition: background-color 0.3s, color 0.3s, box-shadow 0.3s;
+  transition:
+    background-color 0.3s,
+    color 0.3s,
+    box-shadow 0.3s;
 }
 
 .header-row {
@@ -338,6 +345,10 @@ select option {
   box-shadow: 4px 4px 0px var(--struct);
 }
 
+body.dark-mode .mode-btn.active {
+  color: var(--panel-bg);
+}
+
 /* Custom Neo-Brutalist Checkbox */
 input[type="checkbox"] {
   appearance: none;
@@ -360,7 +371,7 @@ input[type="checkbox"]:hover {
 }
 
 input[type="checkbox"]:checked {
-  background: var(--accent);
+  background: var(--text-primary);
 }
 
 input[type="checkbox"]:checked::after {
@@ -375,6 +386,12 @@ input[type="checkbox"]:checked::after {
 }
 
 @keyframes slideUp {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
