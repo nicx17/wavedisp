@@ -1,5 +1,5 @@
 """
-Clock drawing mode for the LED matrix.
+Stopwatch drawing mode for the LED matrix.
 """
 
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements,bare-except,invalid-name
@@ -8,10 +8,9 @@ import time
 from backend.rendering_utils import get_font
 
 
-def draw_clock(fb, font, state, now):
-    """Draws the clock onto the framebuffer."""
+def draw_stopwatch(fb, font, state, now):
+    """Draws the stopwatch onto the framebuffer."""
     ttf_font = get_font(state.clock_size, state.font_file)
-
     layout = getattr(state, "clock_layout", "single")
 
     def _draw_time(
@@ -23,7 +22,6 @@ def draw_clock(fb, font, state, now):
             except Exception:
                 return int(fb.draw.textlength(text, font=f))
 
-        # Use fixed maximum widths for layout anchoring to prevent jitter
         fixed_2d_w = get_w("00", ttf_font)
         col_w = get_w(":", ttf_font)
         ms_w = get_w(f".{ms_str}", ttf_font) if ms_str else 0
@@ -42,13 +40,12 @@ def draw_clock(fb, font, state, now):
             cx = box_x + (box_w - actual_w) // 2
             draw_text_thick((cx, cy), text, f, color)
 
-        show_hh = getattr(state, "show_hh", True) and bool(h_str)
-        show_mm = getattr(state, "show_mm", True)
-        show_ss = getattr(state, "show_ss", True)
-        show_colons = getattr(state, "show_colons", True)
+        show_hh = bool(h_str)
+        show_mm = True
+        show_ss = True
+        show_colons = True
 
         if layout == "manual":
-            # Manual independent positioning for each segment
             if show_hh:
                 draw_centered_in_box(
                     getattr(state, "pos_hh_x", 4),
@@ -76,9 +73,7 @@ def draw_clock(fb, font, state, now):
                     ttf_font,
                     c_s,
                 )
-
         elif layout == "stacked":
-            # HH:MM
             top_w = 0
             if show_hh:
                 top_w += fixed_2d_w
@@ -101,7 +96,6 @@ def draw_clock(fb, font, state, now):
             if show_mm:
                 draw_centered_in_box(curr_x, fixed_2d_w, y, m_str, ttf_font, c_m)
 
-            # SS.ms
             bot_w = 0
             if show_ss:
                 bot_w += fixed_2d_w
@@ -122,9 +116,7 @@ def draw_clock(fb, font, state, now):
                 curr_x += am_w + state.gap_x
             if ms_str:
                 draw_text_thick((curr_x, bot_y), f".{ms_str}", ttf_font, c_ms)
-
         else:
-            # HH:MM:SS
             total_w = 0
             if show_hh:
                 total_w += fixed_2d_w
@@ -133,7 +125,6 @@ def draw_clock(fb, font, state, now):
             if show_ss:
                 total_w += fixed_2d_w
 
-            # Gaps and Colons
             if show_hh and show_mm:
                 total_w += (col_w + (state.gap_x * 2)) if show_colons else state.gap_x
             if show_mm and show_ss:
@@ -190,30 +181,42 @@ def draw_clock(fb, font, state, now):
                         c_ms,
                     )
 
-    # -- DRAW NORMAL CLOCK --
-    h_str = time.strftime("%I" if state.format_12h else "%H", now).lstrip("0") or "0"
-    m_str = time.strftime("%M", now)
-    s_str = time.strftime("%S", now)
-    ms_str = f"{(time.time() % 1) * 1000:03.0f}" if state.show_ms else ""
-    ampm_str = time.strftime("%p", now) if state.format_12h else ""
+    elapsed = getattr(state, "sw_elapsed", 0.0)
+    if getattr(state, "sw_state", "stopped") == "running":
+        start_time = getattr(state, "sw_start_time", 0.0)
+        if start_time > 0:
+            elapsed += time.time() - start_time
 
-    c_h = (state.color_h["r"], state.color_h["g"], state.color_h["b"])
-    c_m = (state.color_m["r"], state.color_m["g"], state.color_m["b"])
-    c_s = (state.color_s["r"], state.color_s["g"], state.color_s["b"])
-    cms_dict = getattr(state, "color_ms", state.color_s)
-    c_ms = (cms_dict["r"], cms_dict["g"], cms_dict["b"])
+    sw_h_val = int(elapsed // 3600)
+    sw_m_val = int((elapsed % 3600) // 60)
+    sw_s_val = int(elapsed % 60)
+    sw_ms_val = int((elapsed % 1) * 1000)
+
+    show_h = getattr(state, "sw_show_hours", False) or sw_h_val > 0
+    sw_h_str = f"{sw_h_val:02d}" if show_h else ""
+    sw_m_str = f"{sw_m_val:02d}"
+    sw_s_str = f"{sw_s_val:02d}"
+    sw_ms_str = f"{sw_ms_val:03d}"
+
+    sw_c_h = (state.color_sw_h["r"], state.color_sw_h["g"], state.color_sw_h["b"])
+    sw_c_m = (state.color_sw_m["r"], state.color_sw_m["g"], state.color_sw_m["b"])
+    sw_c_s = (state.color_sw_s["r"], state.color_sw_s["g"], state.color_sw_s["b"])
+    sw_c_ms = (state.color_sw_ms["r"], state.color_sw_ms["g"], state.color_sw_ms["b"])
+
+    sw_px = getattr(state, "sw_pos_x", 4)
+    sw_py = getattr(state, "sw_pos_y", 50)
 
     _draw_time(
-        h_str,
-        m_str,
-        s_str,
-        ms_str,
-        ampm_str,
-        state.pos_x,
-        state.pos_y,
-        c_h,
-        c_m,
-        c_s,
-        c_ms,
-        getattr(state, "ms_position", "inline"),
+        sw_h_str,
+        sw_m_str,
+        sw_s_str,
+        sw_ms_str,
+        "",
+        sw_px,
+        sw_py,
+        sw_c_h,
+        sw_c_m,
+        sw_c_s,
+        sw_c_ms,
+        getattr(state, "sw_ms_position", "inline"),
     )

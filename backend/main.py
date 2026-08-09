@@ -16,6 +16,7 @@ from backend.api import app, set_shared_state  # noqa: E402
 from backend.matrix_controller import start_matrix_process  # noqa: E402
 from backend.config import load_config  # noqa: E402
 from backend.spotify_manager import start_spotify_poller  # noqa: E402
+from backend.scheduler import start_scheduler  # noqa: E402
 from backend.settings import env, env_bool, resolve_path  # noqa: E402
 
 if __name__ == "__main__":
@@ -33,6 +34,9 @@ if __name__ == "__main__":
 
     # Start Spotify background poller thread
     start_spotify_poller(shared_state, shared_lock)
+    
+    # Start Scheduler thread
+    start_scheduler(shared_state, shared_lock)
 
     host = env("WAVEDISP_HOST", "0.0.0.0")
     port = int(env("WAVEDISP_PORT", "5000"))

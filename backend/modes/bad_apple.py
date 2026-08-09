@@ -18,7 +18,9 @@ def draw_bad_apple(fb, state):
         return
 
     if bad_apple_data is None:
-        data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bad_apple.bin")
+        data_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "bad_apple.bin"
+        )
         try:
             with open(data_path, "rb") as f:
                 bad_apple_data = f.read()

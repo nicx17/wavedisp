@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Clock,
+  Calendar,
+  Plus,
   Palette,
   Type,
   Move,
@@ -14,6 +16,7 @@ import {
   Moon,
   Hash,
   Timer,
+  Power,
   Play,
   Square,
   RotateCcw,
@@ -180,6 +183,131 @@ function PresetsPanel({ config, updateConfig, activePreset, setActivePreset }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+
+function SchedulesPanel({ config, updateConfig }) {
+  const [newTime, setNewTime] = useState("08:00");
+  const [newPreset, setNewPreset] = useState("slot_1");
+  const [newDays, setNewDays] = useState([]);
+  
+  const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  const toggleDay = (dayIndex) => {
+    if (newDays.includes(dayIndex)) {
+      setNewDays(newDays.filter(d => d !== dayIndex));
+    } else {
+      setNewDays([...newDays, dayIndex].sort());
+    }
+  };
+
+  const addSchedule = () => {
+    if (newDays.length === 0) return;
+    const newSchedule = {
+      id: Date.now().toString(),
+      preset_slot: newPreset,
+      enabled: true,
+      time: newTime,
+      days: newDays
+    };
+    const schedules = [...(config.schedules || []), newSchedule];
+    updateConfig({ ...config, schedules });
+  };
+
+  const removeSchedule = (id) => {
+    const schedules = (config.schedules || []).filter(s => s.id !== id);
+    updateConfig({ ...config, schedules });
+  };
+  
+  const toggleSchedule = (id) => {
+    const schedules = (config.schedules || []).map(s => {
+      if (s.id === id) return { ...s, enabled: !s.enabled };
+      return s;
+    });
+    updateConfig({ ...config, schedules });
+  };
+
+  return (
+    <div className="state-panel" style={{ marginTop: "2rem" }}>
+      <h3 style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <Calendar size={20} /> Schedules
+      </h3>
+      
+      {/* List Existing */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem", marginTop: "1rem" }}>
+        {(config.schedules || []).map(sched => (
+          <div key={sched.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--input-bg)", padding: "1rem", borderRadius: "8px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                <strong>{sched.time}</strong>
+                <span>
+                  {sched.days.length === 7 ? "Everyday" : sched.days.map(d => daysOfWeek[d]).join(", ")}
+                </span>
+              </div>
+              <div style={{ opacity: 0.7, fontSize: "0.9rem" }}>
+                Loads: {config.preset_names?.[sched.preset_slot] || sched.preset_slot}
+              </div>
+            </div>
+            
+            <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+              <div className="toggle-switch" onClick={() => toggleSchedule(sched.id)} style={{ width: "60px", padding: "0.25rem" }}>
+                <div style={{ flex: 1, fontWeight: 600, fontSize: "0.8rem", textAlign: "center" }}>
+                  {sched.enabled ? "ON" : "OFF"}
+                </div>
+              </div>
+              <button className="mode-btn" onClick={() => removeSchedule(sched.id)} style={{ padding: "0.5rem", background: "rgba(255,50,50,0.1)", color: "#ff5555" }}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add New */}
+      <div style={{ marginTop: "2rem", borderTop: "2px solid var(--border)", paddingTop: "1rem" }}>
+        <h4 style={{ marginBottom: "1rem" }}>Add New Schedule</h4>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          
+          <div className="control-group row">
+            <div className="col">
+              <label>Time</label>
+              <input type="time" value={newTime} onChange={(e) => setNewTime(e.target.value)} style={{ background: "var(--input-bg)", color: "var(--text-primary)", border: "2px solid var(--border)", padding: "0.5rem", borderRadius: "8px", outline: "none" }} />
+            </div>
+            <div className="col">
+              <label>Preset to Load</label>
+              <select value={newPreset} onChange={(e) => setNewPreset(e.target.value)}>
+                {Array.from({length: 10}, (_, i) => i + 1).map(i => (
+                  <option key={`slot_${i}`} value={`slot_${i}`}>
+                    {config.preset_names?.[`slot_${i}`] || `Slot ${i}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          
+          <div>
+            <label style={{ display: "block", marginBottom: "0.5rem", fontWeight: 600, fontSize: "0.8rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "1px" }}>Days of Week</label>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              {daysOfWeek.map((day, i) => (
+                <button
+                  key={day}
+                  className={`mode-btn ${newDays.includes(i) ? "active" : ""}`}
+                  onClick={() => toggleDay(i)}
+                  style={{ padding: "0.5rem", minWidth: "40px" }}
+                >
+                  {day}
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          <button className="mode-btn active" onClick={addSchedule} disabled={newDays.length === 0} style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem", padding: "0.75rem", marginTop: "1rem" }}>
+            <Plus size={16} /> Add Schedule
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -508,10 +636,22 @@ function App() {
                 }}
               >
                 <button
+                  onClick={() => handleMode("off")}
+                  className={`mode-btn ${config.mode === "off" ? "active" : ""}`}
+                >
+                  <Power size={16} /> Off
+                </button>
+                <button
                   onClick={() => handleMode("clock")}
                   className={`mode-btn ${config.mode === "clock" ? "active" : ""}`}
                 >
                   <Clock size={16} /> Clock
+                </button>
+                <button
+                  onClick={() => handleMode("stopwatch")}
+                  className={`mode-btn ${config.mode === "stopwatch" ? "active" : ""}`}
+                >
+                  <Timer size={16} /> Stopwatch
                 </button>
                 <button
                   onClick={() => handleMode("warning")}
@@ -1537,10 +1677,13 @@ function App() {
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
 
+            {config.mode === "stopwatch" && (
+              <div className="state-panel">
                 <h3
                   style={{
-                    marginTop: "2rem",
                     marginBottom: "1rem",
                     borderBottom: "2px solid var(--border)",
                     paddingBottom: "0.5rem",
@@ -1553,28 +1696,6 @@ function App() {
                 </h3>
 
                 <div className="control-group row">
-                  <div className="col">
-                    <label>Enable Stopwatch Overlay</label>
-                    <div
-                      className="toggle-switch"
-                      onClick={() =>
-                        updateConfig({
-                          ...config,
-                          show_stopwatch: !config.show_stopwatch,
-                        })
-                      }
-                    >
-                      <div style={{ flex: 1, fontWeight: 600 }}>
-                        {config.show_stopwatch ? "ON" : "OFF"}
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={config.show_stopwatch}
-                        readOnly
-                        style={{ pointerEvents: "none" }}
-                      />
-                    </div>
-                  </div>
                   <div className="col">
                     <label>Force Show Hours</label>
                     <div
@@ -1599,168 +1720,299 @@ function App() {
                   </div>
                 </div>
 
-                {config.show_stopwatch && (
-                  <>
-                    <div
-                      className="control-group"
-                      style={{
-                        display: "flex",
-                        gap: "1rem",
-                        justifyContent: "center",
-                        margin: "1rem 0",
-                      }}
-                    >
-                      <button
-                        onClick={() => handleStopwatchAction("start")}
-                        className={`mode-btn ${config.sw_state === "running" ? "active" : ""}`}
-                      >
-                        <Play size={16} /> Start
-                      </button>
-                      <button
-                        onClick={() => handleStopwatchAction("stop")}
-                        className={`mode-btn ${config.sw_state === "stopped" && config.sw_elapsed > 0 ? "active" : ""}`}
-                      >
-                        <Square size={16} /> Stop
-                      </button>
-                      <button
-                        onClick={() => handleStopwatchAction("reset")}
-                        className="mode-btn"
-                      >
-                        <RotateCcw size={16} /> Reset
-                      </button>
-                    </div>
+                <div
+                  className="control-group"
+                  style={{
+                    display: "flex",
+                    gap: "1rem",
+                    justifyContent: "center",
+                    margin: "1rem 0",
+                  }}
+                >
+                  <button
+                    onClick={() => handleStopwatchAction("start")}
+                    className={`mode-btn ${config.sw_state === "running" ? "active" : ""}`}
+                  >
+                    <Play size={16} /> Start
+                  </button>
+                  <button
+                    onClick={() => handleStopwatchAction("stop")}
+                    className={`mode-btn ${config.sw_state === "stopped" && config.sw_elapsed > 0 ? "active" : ""}`}
+                  >
+                    <Square size={16} /> Stop
+                  </button>
+                  <button
+                    onClick={() => handleStopwatchAction("reset")}
+                    className="mode-btn"
+                  >
+                    <RotateCcw size={16} /> Reset
+                  </button>
+                </div>
 
-                    <div className="control-group row">
-                      <div className="col">
-                        <label>
-                          <Move size={16} /> X Position
-                        </label>
-                        <div className="color-picker-container">
-                          <input
-                            type="range"
-                            min="-10"
-                            max="64"
-                            value={config.sw_pos_x ?? 4}
-                            onChange={(e) =>
-                              updateConfig({
-                                ...config,
-                                sw_pos_x: parseInt(e.target.value),
-                              })
-                            }
-                          />
-                          <span className="slider-val">
-                            {config.sw_pos_x ?? 4}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="col">
-                        <label>
-                          <Move size={16} /> Y Position
-                        </label>
-                        <div className="color-picker-container">
-                          <input
-                            type="range"
-                            min="-10"
-                            max="80"
-                            value={config.sw_pos_y ?? 50}
-                            onChange={(e) =>
-                              updateConfig({
-                                ...config,
-                                sw_pos_y: parseInt(e.target.value),
-                              })
-                            }
-                          />
-                          <span className="slider-val">
-                            {config.sw_pos_y ?? 50}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="control-group row">
-                      <div className="col">
-                        <label>
-                          <Palette size={16} /> Mins
-                        </label>
-                        <div className="color-picker-container">
-                          <input
-                            type="color"
-                            value={
-                              config.color_sw_m
-                                ? rgbToHex(
-                                    config.color_sw_m.r,
-                                    config.color_sw_m.g,
-                                    config.color_sw_m.b,
-                                  )
-                                : "#00ffff"
-                            }
-                            onChange={(e) => handleColor("color_sw_m", e)}
-                          />
-                        </div>
-                      </div>
-                      <div className="col">
-                        <label>
-                          <Palette size={16} /> Secs
-                        </label>
-                        <div className="color-picker-container">
-                          <input
-                            type="color"
-                            value={
-                              config.color_sw_s
-                                ? rgbToHex(
-                                    config.color_sw_s.r,
-                                    config.color_sw_s.g,
-                                    config.color_sw_s.b,
-                                  )
-                                : "#ff0064"
-                            }
-                            onChange={(e) => handleColor("color_sw_s", e)}
-                          />
-                        </div>
-                      </div>
-                      <div className="col">
-                        <label>
-                          <Palette size={16} /> MS
-                        </label>
-                        <div className="color-picker-container">
-                          <input
-                            type="color"
-                            value={
-                              config.color_sw_ms
-                                ? rgbToHex(
-                                    config.color_sw_ms.r,
-                                    config.color_sw_ms.g,
-                                    config.color_sw_ms.b,
-                                  )
-                                : "#ff6400"
-                            }
-                            onChange={(e) => handleColor("color_sw_ms", e)}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="control-group">
-                      <label>MS Position</label>
-                      <select
-                        value={config.sw_ms_position || "inline"}
+                <div className="control-group row">
+                  <div className="col">
+                    <label>
+                      <Move size={16} /> X Position
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="range"
+                        min="-10"
+                        max="64"
+                        value={config.sw_pos_x ?? 4}
                         onChange={(e) =>
                           updateConfig({
                             ...config,
-                            sw_ms_position: e.target.value,
+                            sw_pos_x: parseInt(e.target.value),
                           })
                         }
-                      >
-                        <option value="inline">Inline</option>
-                        <option value="above">Above Stopwatch</option>
-                        <option value="below">Below Stopwatch</option>
-                      </select>
+                      />
+                      <span className="slider-val">{config.sw_pos_x ?? 4}</span>
                     </div>
-                  </>
-                )}
+                  </div>
+                  <div className="col">
+                    <label>
+                      <Move size={16} /> Y Position
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="range"
+                        min="-10"
+                        max="80"
+                        value={config.sw_pos_y ?? 50}
+                        onChange={(e) =>
+                          updateConfig({
+                            ...config,
+                            sw_pos_y: parseInt(e.target.value),
+                          })
+                        }
+                      />
+                      <span className="slider-val">
+                        {config.sw_pos_y ?? 50}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="control-group row">
+                  <div className="col">
+                    <label>
+                      <Palette size={16} /> Mins
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="color"
+                        value={
+                          config.color_sw_m
+                            ? rgbToHex(
+                                config.color_sw_m.r,
+                                config.color_sw_m.g,
+                                config.color_sw_m.b,
+                              )
+                            : "#00ffff"
+                        }
+                        onChange={(e) => handleColor("color_sw_m", e)}
+                      />
+                    </div>
+                  </div>
+                  <div className="col">
+                    <label>
+                      <Palette size={16} /> Secs
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="color"
+                        value={
+                          config.color_sw_s
+                            ? rgbToHex(
+                                config.color_sw_s.r,
+                                config.color_sw_s.g,
+                                config.color_sw_s.b,
+                              )
+                            : "#ff0064"
+                        }
+                        onChange={(e) => handleColor("color_sw_s", e)}
+                      />
+                    </div>
+                  </div>
+                  <div className="col">
+                    <label>
+                      <Palette size={16} /> MS
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="color"
+                        value={
+                          config.color_sw_ms
+                            ? rgbToHex(
+                                config.color_sw_ms.r,
+                                config.color_sw_ms.g,
+                                config.color_sw_ms.b,
+                              )
+                            : "#ff6400"
+                        }
+                        onChange={(e) => handleColor("color_sw_ms", e)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="control-group">
+                  <label>
+                    <Type size={16} /> Font File
+                  </label>
+                  <select
+                    value={config.font_file}
+                    onChange={(e) =>
+                      updateConfig({ ...config, font_file: e.target.value })
+                    }
+                  >
+                    <optgroup label="Matrix BDF (Fixed Size)">
+                      <option value="4x6.bdf">Micro (4x6)</option>
+                      <option value="5x8.bdf">Tiny (5x8)</option>
+                      <option value="6x10.bdf">Mini (6x10)</option>
+                      <option value="6x13.bdf">Small (6x13)</option>
+                      <option value="6x13B.bdf">Small Bold (6x13)</option>
+                      <option value="7x13.bdf">Medium (7x13)</option>
+                      <option value="7x14B.bdf">Medium Bold (7x14)</option>
+                      <option value="8x13B.bdf">Large Bold (8x13)</option>
+                      <option value="9x15B.bdf">XL Bold (9x15)</option>
+                      <option value="9x18B.bdf">Jumbo Bold (9x18)</option>
+                      <option value="10x20.bdf">Huge (10x20)</option>
+                    </optgroup>
+                    <optgroup label="Custom TTF (Scalable)">
+                      <option value="ttf">System Default</option>
+                      <option value="Anton.ttf">Anton (Blocky)</option>
+                      <option value="BebasNeue.ttf">Bebas Neue (Tall)</option>
+                      <option value="VT323.ttf">VT323 (Terminal)</option>
+                      <option value="PressStart2P.ttf">
+                        Press Start 2P (8-bit)
+                      </option>
+                      <option value="RubikMonoOne.ttf">
+                        Rubik Mono (Thick)
+                      </option>
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div className="control-group row">
+                  <div className="col">
+                    <label>
+                      <Type size={16} /> TTF Size
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="range"
+                        min="8"
+                        max="40"
+                        value={config.clock_size}
+                        onChange={(e) =>
+                          updateConfig({
+                            ...config,
+                            clock_size: parseInt(e.target.value),
+                          })
+                        }
+                      />
+                      <span className="slider-val">{config.clock_size}px</span>
+                    </div>
+                  </div>
+                  <div className="col">
+                    <label>
+                      <Type size={16} /> TTF Thickness
+                    </label>
+                    <div className="color-picker-container">
+                      <input
+                        type="range"
+                        min="1"
+                        max="5"
+                        value={config.clock_thickness}
+                        onChange={(e) =>
+                          updateConfig({
+                            ...config,
+                            clock_thickness: parseInt(e.target.value),
+                          })
+                        }
+                      />
+                      <span className="slider-val">
+                        {config.clock_thickness}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="control-group">
+                  <label>MS Position</label>
+                  <select
+                    value={config.sw_ms_position || "inline"}
+                    onChange={(e) =>
+                      updateConfig({
+                        ...config,
+                        sw_ms_position: e.target.value,
+                      })
+                    }
+                  >
+                    <option value="inline">Inline</option>
+                    <option value="above">Above Stopwatch</option>
+                    <option value="below">Below Stopwatch</option>
+                  </select>
+                </div>
+
+                <div className="control-group">
+                  <label>Layout</label>
+                  <select
+                    value={config.clock_layout || "single"}
+                    onChange={(e) =>
+                      updateConfig({ ...config, clock_layout: e.target.value })
+                    }
+                  >
+                    <option value="single">Single Line (Inline)</option>
+                    <option value="stacked">Stacked (Two Lines)</option>
+                  </select>
+                </div>
+
+                <div className="control-group">
+                  <label>X Spacing (Gap)</label>
+                  <div className="color-picker-container">
+                    <input
+                      type="range"
+                      min="0"
+                      max="20"
+                      value={config.gap_x ?? 2}
+                      onChange={(e) =>
+                        updateConfig({
+                          ...config,
+                          gap_x: parseInt(e.target.value),
+                        })
+                      }
+                    />
+                    <span className="slider-val">
+                      {config.gap_x ?? 2}px
+                    </span>
+                  </div>
+                </div>
+
+                <div className="control-group">
+                  <label>Y Spacing (Gap)</label>
+                  <div className="color-picker-container">
+                    <input
+                      type="range"
+                      min="-10"
+                      max="30"
+                      value={config.gap_y ?? 2}
+                      onChange={(e) =>
+                        updateConfig({
+                          ...config,
+                          gap_y: parseInt(e.target.value),
+                        })
+                      }
+                    />
+                    <span className="slider-val">
+                      {config.gap_y ?? 2}px
+                    </span>
+                  </div>
+                </div>
               </div>
             )}
-
             {config.mode === "warning" && (
               <div className="state-panel">
                 <h3
@@ -2918,6 +3170,7 @@ function App() {
             activePreset={activePreset}
             setActivePreset={setActivePreset}
           />
+          <SchedulesPanel config={config} updateConfig={updateConfig} />
         </div>
       </div>
     </div>

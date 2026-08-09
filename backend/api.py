@@ -204,46 +204,18 @@ def save_preset(slot_id: str):
 
 @app.post("/api/presets/load/{slot_id}")
 def load_preset(slot_id: str):
-    from backend.config import DEFAULT_CONFIG
-
+    from backend.config import apply_preset
+    
     with shared_lock:
         presets = shared_state.get("presets", {})
         target_preset = presets.get(slot_id)
         if not target_preset:
             return {"status": "error", "message": "Preset is empty"}
-
-        # Reset state to default first, then apply preset to guarantee clean slate
-        keys_to_preserve = [
-            "presets",
-            "preset_names",
-            "spotify_client_id",
-            "spotify_client_secret",
-            "spotify_linked",
-            "spotify_image_bytes",
-        ]
-        preserved = {k: shared_state.get(k) for k in keys_to_preserve}
-        private_vars = {k: v for k, v in shared_state.items() if k.startswith("_")}
-
-        shared_state.clear()
-
-        # 1. Apply defaults
-        for k, v in DEFAULT_CONFIG.items():
-            if k not in keys_to_preserve:
-                shared_state[k] = v
-
-        # 2. Apply preset
-        for k, v in target_preset.items():
-            shared_state[k] = v
-
-        # 3. Restore preserved keys & private vars
-        for k, v in preserved.items():
-            if v is not None:
-                shared_state[k] = v
-        for k, v in private_vars.items():
-            shared_state[k] = v
-
-        shared_state["_last_updated"] = time.time()
-
+            
+        success = apply_preset(shared_state, target_preset)
+        if not success:
+            return {"status": "error", "message": "Failed to apply preset"}
+            
     save_debounced(shared_state, 0.5)
     return {"status": "success"}
 

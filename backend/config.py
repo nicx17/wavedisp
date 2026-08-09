@@ -10,7 +10,8 @@ State is passed between processes using multiprocessing.Manager().dict().
 import threading
 import json
 import os
-from typing import Dict
+from typing import Dict, List
+import time
 from pydantic import BaseModel
 from backend.settings import env, resolve_path
 
@@ -135,6 +136,9 @@ class ConfigModel(BaseModel):
     ui_light_border: str
     ui_dark_border: str
 
+    # Scheduling
+    schedules: List[dict]
+
 
 DEFAULT_CONFIG = {
     "mode": "clock",
@@ -243,6 +247,7 @@ DEFAULT_CONFIG = {
     "ui_dark_text": "#ffde00",
     "ui_light_border": "#000000",
     "ui_dark_border": "#ffde00",
+    "schedules": [],
 }
 
 
@@ -255,6 +260,17 @@ def load_config():
             data.update(saved_data)
         except Exception as e:
             print("Failed to load config:", e)
+            
+    # Legacy migration: Stopwatch is now its own mode
+    if data.get("mode") == "clock" and data.get("show_stopwatch") is True:
+        data["mode"] = "stopwatch"
+        
+    if "presets" in data:
+        for slot, preset_data in data["presets"].items():
+            if isinstance(preset_data, dict):
+                if preset_data.get("mode") == "clock" and preset_data.get("show_stopwatch") is True:
+                    preset_data["mode"] = "stopwatch"
+
     return data
 
 
@@ -298,3 +314,44 @@ def save_debounced(state_dict, delay=0.5):
         _save_timer.cancel()
     _save_timer = threading.Timer(delay, save_config, args=(dict(state_dict),))
     _save_timer.start()
+
+def apply_preset(shared_state, target_preset: dict):
+    """
+    Applies a preset dictionary to the shared_state.
+    Must be called while holding shared_lock.
+    """
+    if not target_preset:
+        return False
+
+    keys_to_preserve = [
+        "presets",
+        "preset_names",
+        "schedules",
+        "spotify_client_id",
+        "spotify_client_secret",
+        "spotify_linked",
+        "spotify_image_bytes",
+    ]
+    preserved = {k: shared_state.get(k) for k in keys_to_preserve}
+    private_vars = {k: v for k, v in shared_state.items() if k.startswith("_")}
+
+    shared_state.clear()
+
+    # 1. Apply defaults
+    for k, v in DEFAULT_CONFIG.items():
+        if k not in keys_to_preserve:
+            shared_state[k] = v
+
+    # 2. Apply preset
+    for k, v in target_preset.items():
+        shared_state[k] = v
+
+    # 3. Restore preserved keys & private vars
+    for k, v in preserved.items():
+        if v is not None:
+            shared_state[k] = v
+    for k, v in private_vars.items():
+        shared_state[k] = v
+
+    shared_state["_last_updated"] = time.time()
+    return True

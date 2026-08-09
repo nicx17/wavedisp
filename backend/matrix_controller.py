@@ -35,6 +35,7 @@ from backend.modes.grid import draw_layout_grid
 from backend.modes.qrcode_mode import draw_qrcode
 from backend.modes.draw_mode import draw_canvas
 from backend.modes.spotify_mode import draw_spotify
+from backend.modes.stopwatch import draw_stopwatch
 
 import backend.modes.bad_apple as bad_apple_mod
 
@@ -141,8 +142,12 @@ def matrix_loop(shared_state, shared_lock):
         if getattr(state_snapshot, "show_grid", False):
             draw_layout_grid(fb)
 
-        if current_mode == "clock":
+        if current_mode == "off":
+            pass
+        elif current_mode == "clock":
             draw_clock(fb, None, state_snapshot, time.localtime())
+        elif current_mode == "stopwatch":
+            draw_stopwatch(fb, None, state_snapshot, time.localtime())
         elif current_mode == "warning":
             draw_warning(fb, frame_count, state_snapshot)
         elif current_mode == "smiley":
