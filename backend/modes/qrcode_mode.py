@@ -4,8 +4,9 @@ QR Code drawing mode for the LED matrix.
 
 import io
 import time
-from PIL import Image
+
 import segno
+from PIL import Image
 
 _cached_qr_settings = None
 _cached_qr_image = None

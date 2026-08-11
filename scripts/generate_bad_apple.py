@@ -1,7 +1,8 @@
-import cv2
-import numpy as np
 import subprocess
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 VIDEO_URL = "https://www.youtube.com/watch?v=FtutLA63Cp8"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

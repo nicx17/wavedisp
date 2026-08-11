@@ -4,14 +4,16 @@ Handles OAuth Flow and background polling of the currently playing track.
 Complies with Spotify's Developer TOS by not permanently caching art.
 """
 
-import os
-import time
-import threading
 import io
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-from PIL import Image
+import os
+import threading
+import time
+
 import requests
+import spotipy
+from PIL import Image
+from spotipy.oauth2 import SpotifyOAuth
+
 from backend.settings import env
 
 SPOTIFY_CACHE_PATH = os.path.join(
@@ -32,23 +34,26 @@ def get_auth_manager(client_id, client_secret):
     )
 
 
-def start_spotify_poller(shared_state, shared_lock):
+def start_spotify_poller(shared_state, shared_lock, dirty_flag=None):
     """Starts a daemon thread that polls the Spotify API every 5 seconds."""
     thread = threading.Thread(
-        target=_spotify_poll_loop, args=(shared_state, shared_lock), daemon=True
+        target=_spotify_poll_loop,
+        args=(shared_state, shared_lock, dirty_flag),
+        daemon=True,
     )
     thread.start()
 
 
-def _spotify_poll_loop(shared_state, shared_lock):
+def _spotify_poll_loop(shared_state, shared_lock, dirty_flag=None):
     last_track_id = None
 
     while True:
         with shared_lock:
-            mode = shared_state.get("mode")
-            linked = shared_state.get("spotify_linked")
-            client_id = shared_state.get("spotify_client_id")
-            client_secret = shared_state.get("spotify_client_secret")
+            state_snapshot = dict(shared_state)
+        mode = state_snapshot.get("mode")
+        linked = state_snapshot.get("spotify_linked")
+        client_id = state_snapshot.get("spotify_client_id")
+        client_secret = state_snapshot.get("spotify_client_secret")
 
         if mode == "spotify" and linked and client_id and client_secret:
             try:
@@ -80,7 +85,10 @@ def _spotify_poll_loop(shared_state, shared_lock):
                                         shared_state["spotify_image_bytes"] = (
                                             img.tobytes()
                                         )
-                                        shared_state["_last_updated"] = time.time()
+                                        now = time.time()
+                                        shared_state["_last_updated"] = now
+                                    if dirty_flag is not None:
+                                        dirty_flag.value = now
 
                                     last_track_id = track_id
             except Exception as e:

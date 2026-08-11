@@ -162,95 +162,19 @@ If the binary is missing, Bad Apple mode stays blank and logs a message instead 
 
 ## API
 
-- `GET /api/config` returns the active matrix config.
-- `POST /api/config` accepts a full config payload from the dashboard. For a detailed reference on the payload structure, inspect the `ConfigModel` in `backend/config.py`.
-- `POST /api/stopwatch` handles stopwatch `start`, `stop`, and `reset`.
-- `GET /api/stream` returns an MJPEG preview stream.
-- `POST /api/presets/save/{slot_id}` and `POST /api/presets/load/{slot_id}` manage presets.
-- `POST /api/spotify/auth_url`, `POST /api/spotify/callback`, and `POST /api/spotify/unlink` manage Spotify linking.
+See [docs/API.md](docs/API.md) for the full API reference and curl examples.
 
-<details>
-<summary><b>Example JSON Payload for POST /api/config</b></summary>
+Quick examples:
 
-```json
-{
-  "mode": "clock",
-  "brightness": 100,
-  "show_grid": false,
-  "gpio_slowdown": 2,
-  "hardware_mapping": "regular",
-  "color_h": {"r": 0, "g": 255, "b": 255},
-  "color_m": {"r": 0, "g": 200, "b": 255},
-  "color_s": {"r": 255, "g": 0, "b": 100},
-  "color_ms": {"r": 255, "g": 100, "b": 0},
-  "pos_x": 4,
-  "pos_y": 36,
-  "show_hh": true,
-  "show_mm": true,
-  "show_ss": true,
-  "show_colons": true,
-  "pos_hh_x": 4,
-  "pos_hh_y": 36,
-  "pos_mm_x": 26,
-  "pos_mm_y": 36,
-  "pos_ss_x": 48,
-  "pos_ss_y": 36,
-  "font_file": "7x14B.bdf",
-  "clock_size": 14,
-  "clock_thickness": 1,
-  "format_12h": false,
-  "show_ms": false,
-  "clock_layout": "single",
-  "ms_position": "inline",
-  "gap_x": 2,
-  "gap_y": 2,
-  "show_stopwatch": false,
-  "sw_pos_x": 4,
-  "sw_pos_y": 50,
-  "sw_show_hours": false,
-  "sw_ms_position": "inline",
-  "color_sw_h": {"r": 0, "g": 255, "b": 255},
-  "color_sw_m": {"r": 0, "g": 200, "b": 255},
-  "color_sw_s": {"r": 255, "g": 0, "b": 100},
-  "color_sw_ms": {"r": 255, "g": 100, "b": 0},
-  "sw_state": "stopped",
-  "sw_start_time": 0.0,
-  "sw_elapsed": 0.0,
-  "warning_color": {"r": 255, "g": 200, "b": 0},
-  "warning_thickness": 3,
-  "warning_blink_speed": 50,
-  "warning_size": 44,
-  "smiley_face_color": {"r": 255, "g": 200, "b": 0},
-  "smiley_cheek_color": {"r": 200, "g": 50, "b": 0},
-  "smiley_eye_color": {"r": 255, "g": 255, "b": 255},
-  "smiley_tongue_color": {"r": 255, "g": 50, "b": 50},
-  "rain_color": {"r": 0, "g": 255, "b": 0},
-  "rain_speed": 10,
-  "life_color": {"r": 0, "g": 255, "b": 255},
-  "life_speed": 10,
-  "alarm_speed": 5,
-  "badapple_invert": false,
-  "qr_data": "https://github.com/nicx17",
-  "qr_error_correction": "L",
-  "qr_color_fg": {"r": 255, "g": 255, "b": 255},
-  "qr_color_bg": {"r": 0, "g": 0, "b": 0},
-  "qr_pos_x": 0,
-  "qr_pos_y": 0,
-  "qr_size": 58,
-  "qr_border": 1,
-  "qr_use_micro": false,
-  "qr_wobble": false,
-  "qr_size_mode": "auto",
-  "draw_data": {},
-  "draw_color_bg": {"r": 0, "g": 0, "b": 0},
-  "spotify_client_id": "",
-  "spotify_client_secret": "",
-  "spotify_linked": false,
-  "presets": {},
-  "preset_names": {}
-}
+```bash
+curl http://wavedisp.local:5000/api/config
+curl -X PATCH http://wavedisp.local:5000/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"clock","brightness":35}'
+curl -X POST http://wavedisp.local:5000/api/presets/load/slot_1
 ```
-</details>
+
+FastAPI also serves interactive OpenAPI docs at `/docs` while the backend is running.
 
 ## License
 

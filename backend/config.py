@@ -7,12 +7,13 @@ Persistence is handled through save_config, and API interaction uses save_deboun
 State is passed between processes using multiprocessing.Manager().dict().
 """
 
-import threading
 import json
 import os
-from typing import Dict, List
+import threading
 import time
+
 from pydantic import BaseModel
+
 from backend.settings import env, resolve_path
 
 CONFIG_FILE = resolve_path(env("WAVEDISP_CONFIG_FILE", "backend/config.json"))
@@ -112,7 +113,7 @@ class ConfigModel(BaseModel):
     qr_size_mode: str
 
     # Draw Mode
-    draw_data: Dict[str, str]
+    draw_data: dict[str, str]
     draw_color_bg: ColorModel
 
     # Spotify
@@ -121,8 +122,8 @@ class ConfigModel(BaseModel):
     spotify_linked: bool
 
     # Presets
-    presets: Dict[str, dict]
-    preset_names: Dict[str, str]
+    presets: dict[str, dict]
+    preset_names: dict[str, str]
 
     # UI Theme
     ui_light_bg: str
@@ -137,7 +138,7 @@ class ConfigModel(BaseModel):
     ui_dark_border: str
 
     # Scheduling
-    schedules: List[dict]
+    schedules: list[dict]
 
 
 DEFAULT_CONFIG = {
@@ -260,15 +261,18 @@ def load_config():
             data.update(saved_data)
         except Exception as e:
             print("Failed to load config:", e)
-            
+
     # Legacy migration: Stopwatch is now its own mode
     if data.get("mode") == "clock" and data.get("show_stopwatch") is True:
         data["mode"] = "stopwatch"
-        
+
     if "presets" in data:
         for slot, preset_data in data["presets"].items():
             if isinstance(preset_data, dict):
-                if preset_data.get("mode") == "clock" and preset_data.get("show_stopwatch") is True:
+                if (
+                    preset_data.get("mode") == "clock"
+                    and preset_data.get("show_stopwatch") is True
+                ):
                     preset_data["mode"] = "stopwatch"
 
     return data
@@ -315,6 +319,7 @@ def save_debounced(state_dict, delay=0.5):
     _save_timer = threading.Timer(delay, save_config, args=(dict(state_dict),))
     _save_timer.start()
 
+
 def apply_preset(shared_state, target_preset: dict):
     """
     Applies a preset dictionary to the shared_state.
@@ -335,23 +340,12 @@ def apply_preset(shared_state, target_preset: dict):
     preserved = {k: shared_state.get(k) for k in keys_to_preserve}
     private_vars = {k: v for k, v in shared_state.items() if k.startswith("_")}
 
+    new_state = {k: v for k, v in DEFAULT_CONFIG.items() if k not in keys_to_preserve}
+    new_state.update(target_preset)
+    new_state.update({k: v for k, v in preserved.items() if v is not None})
+    new_state.update(private_vars)
+    new_state["_last_updated"] = time.time()
+
     shared_state.clear()
-
-    # 1. Apply defaults
-    for k, v in DEFAULT_CONFIG.items():
-        if k not in keys_to_preserve:
-            shared_state[k] = v
-
-    # 2. Apply preset
-    for k, v in target_preset.items():
-        shared_state[k] = v
-
-    # 3. Restore preserved keys & private vars
-    for k, v in preserved.items():
-        if v is not None:
-            shared_state[k] = v
-    for k, v in private_vars.items():
-        shared_state[k] = v
-
-    shared_state["_last_updated"] = time.time()
+    shared_state.update(new_state)
     return True

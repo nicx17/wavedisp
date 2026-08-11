@@ -1,4 +1,3 @@
-import re
 
 with open("dashboard/src/App.jsx", "r") as f:
     lines = f.readlines()
@@ -6,7 +5,7 @@ with open("dashboard/src/App.jsx", "r") as f:
 # 1. Update imports
 for i, line in enumerate(lines):
     if "Timer," in line:
-        lines.insert(i + 1, '  Power,\n')
+        lines.insert(i + 1, "  Power,\n")
         break
 
 # 2. Update buttons
@@ -20,7 +19,7 @@ for i, line in enumerate(lines):
                 </button>
 """
         lines.insert(i - 1, button_code)
-        
+
         button_code2 = """                <button
                   onClick={() => handleMode("stopwatch")}
                   className={`mode-btn ${config.mode === "stopwatch" ? "active" : ""}`}
@@ -28,15 +27,15 @@ for i, line in enumerate(lines):
                   <Timer size={16} /> Stopwatch
                 </button>
 """
-        lines.insert(i + 4, button_code2) # after the clock button closes
+        lines.insert(i + 4, button_code2)  # after the clock button closes
         break
 
 # 3. Move stopwatch settings
 start_idx = -1
 end_idx = -1
 for i, line in enumerate(lines):
-    if '<Timer size={20} /> Stopwatch' in line:
-        start_idx = i - 12 # Find the <h3>
+    if "<Timer size={20} /> Stopwatch" in line:
+        start_idx = i - 12  # Find the <h3>
         break
 
 if start_idx != -1:
@@ -45,12 +44,12 @@ if start_idx != -1:
             # It ends with </> then )}
             end_idx = i + 1
             break
-            
+
     if end_idx != -1:
         # Extract the stopwatch lines
-        stopwatch_lines = lines[start_idx:end_idx+1]
-        del lines[start_idx:end_idx+1]
-        
+        stopwatch_lines = lines[start_idx : end_idx + 1]
+        del lines[start_idx : end_idx + 1]
+
         # Now find where to insert it (before {config.mode === "warning" && ()
         for i, line in enumerate(lines):
             if '{config.mode === "warning" && (' in line:
@@ -60,9 +59,8 @@ if start_idx != -1:
                 new_panel += '                    borderBottom: "2px solid var(--border)",\n                    paddingBottom: "0.5rem",\n'
                 new_panel += '                    display: "flex",\n                    alignItems: "center",\n'
                 new_panel += '                    gap: "0.5rem",\n                  }}\n                >\n'
-                new_panel += '                  <Timer size={20} /> Stopwatch\n                </h3>\n\n'
-                
+                new_panel += "                  <Timer size={20} /> Stopwatch\n                </h3>\n\n"
+
                 # filter out the toggle for Enable Stopwatch Overlay (which was in control-group row with Force Show Hours)
                 # Actually it's easier to just recreate the body of stopwatch settings.
                 break
-

@@ -10,33 +10,17 @@ def draw_smiley(fb, frame_count, state):
     cheek_c = state.smiley_cheek_color
     eye_c = state.smiley_eye_color
     tongue_c = state.smiley_tongue_color
+    face = (face_c["r"], face_c["g"], face_c["b"])
+    face_dim = (int(face_c["r"] * 0.6), int(face_c["g"] * 0.6), int(face_c["b"] * 0.6))
+    cheek = (cheek_c["r"], cheek_c["g"], cheek_c["b"])
+    eye = (eye_c["r"], eye_c["g"], eye_c["b"])
+    tongue = (tongue_c["r"], tongue_c["g"], tongue_c["b"])
 
-    # Base face (Dim fill, bright edge)
-    for y in range(4, 60):
-        for x in range(4, 60):
-            dist = (x - 32) ** 2 + (y - 32) ** 2
-            if dist < 28**2:
-                if dist > 26**2:
-                    fb.set_pixel(x, y, (face_c["r"], face_c["g"], face_c["b"]))
-                else:
-                    fb.set_pixel(
-                        x,
-                        y,
-                        (
-                            int(face_c["r"] * 0.6),
-                            int(face_c["g"] * 0.6),
-                            int(face_c["b"] * 0.6),
-                        ),
-                    )
+    fb.draw.ellipse([4, 4, 59, 59], fill=face)
+    fb.draw.ellipse([6, 6, 57, 57], fill=face_dim)
 
-    # Cheeks
-    for y in range(35, 42):
-        for x in range(12, 22):
-            if (x - 17) ** 2 + (y - 38) ** 2 < 16:
-                fb.set_pixel(x, y, (cheek_c["r"], cheek_c["g"], cheek_c["b"]))
-        for x in range(42, 52):
-            if (x - 47) ** 2 + (y - 38) ** 2 < 16:
-                fb.set_pixel(x, y, (cheek_c["r"], cheek_c["g"], cheek_c["b"]))
+    fb.draw.ellipse([13, 34, 21, 42], fill=cheek)
+    fb.draw.ellipse([43, 34, 51, 42], fill=cheek)
 
     # Eyes
     look_x = 0
@@ -48,36 +32,16 @@ def draw_smiley(fb, frame_count, state):
 
     is_blinking = (frame_count % 60) > 55
     if is_blinking:
-        for x in range(20, 28):
-            fb.set_pixel(x, 24, (0, 0, 0))
-            fb.set_pixel(x, 25, (0, 0, 0))
-        for x in range(36, 44):
-            fb.set_pixel(x, 24, (0, 0, 0))
-            fb.set_pixel(x, 25, (0, 0, 0))
+        fb.draw.rectangle([20, 24, 27, 25], fill=(0, 0, 0))
+        fb.draw.rectangle([36, 24, 43, 25], fill=(0, 0, 0))
     else:
-        for y in range(18, 30):
-            for x in range(20, 28):
-                if (x - 24) ** 2 + ((y - 24) * 0.8) ** 2 < 12:
-                    fb.set_pixel(x, y, (eye_c["r"], eye_c["g"], eye_c["b"]))
-        for y in range(18, 30):
-            for x in range(36, 44):
-                if (x - 40) ** 2 + ((y - 24) * 0.8) ** 2 < 12:
-                    fb.set_pixel(x, y, (eye_c["r"], eye_c["g"], eye_c["b"]))
+        fb.draw.ellipse([20, 18, 28, 30], fill=eye)
+        fb.draw.ellipse([36, 18, 44, 30], fill=eye)
 
         # Pupils
-        for ox in [0, 1]:
-            for oy in [0, 1]:
-                fb.set_pixel(23 + look_x + ox, 24 + oy, (0, 0, 0))
-                fb.set_pixel(39 + look_x + ox, 24 + oy, (0, 0, 0))
+        fb.draw.rectangle([23 + look_x, 24, 24 + look_x, 25], fill=(0, 0, 0))
+        fb.draw.rectangle([39 + look_x, 24, 40 + look_x, 25], fill=(0, 0, 0))
 
-    # Mouth
-    for x in range(16, 49):
-        dx = x - 32
-        y_top = int(38 + 0.04 * (dx**2))
-        y_bot = int(48 - 0.04 * (dx**2))
-        if y_bot > y_top:
-            for y in range(y_top, y_bot):
-                if y > y_bot - 3:
-                    fb.set_pixel(x, y, (tongue_c["r"], tongue_c["g"], tongue_c["b"]))
-                else:
-                    fb.set_pixel(x, y, (0, 0, 0))
+    fb.draw.pieslice([15, 28, 49, 56], start=0, end=180, fill=(0, 0, 0))
+    fb.draw.ellipse([22, 43, 42, 54], fill=tongue)
+    fb.draw.rectangle([15, 28, 49, 39], fill=face_dim)

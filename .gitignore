@@ -25,6 +25,7 @@ certs/*
 
 # Generated media and archives
 docs/archive/
+docs/private/
 temp_bad_apple.mp4
 backend/bad_apple.bin
 wavedisp.service

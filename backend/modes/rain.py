@@ -16,6 +16,21 @@ class RainDrop:
 
 
 rain_drops = [RainDrop() for _ in range(40)]
+_gradient_cache = {}
+
+
+def get_gradient(color):
+    key = (color["r"], color["g"], color["b"])
+    gradient = _gradient_cache.get(key)
+    if gradient is None:
+        r_scale = color["r"] / 255.0
+        g_scale = color["g"] / 255.0
+        b_scale = color["b"] / 255.0
+        gradient = [
+            (int(r_scale * i), int(g_scale * i), int(b_scale * i)) for i in range(256)
+        ]
+        _gradient_cache[key] = gradient
+    return gradient
 
 
 def draw_matrix_rain(fb, state):
@@ -32,13 +47,12 @@ def draw_matrix_rain(fb, state):
 
         tail_start = max(0, int(drop.y - drop.length))
         tail_end = min(64, int(drop.y))
+        gradient = get_gradient(rc)
+        tail_base = drop.y - drop.length
         for y in range(tail_start, tail_end):
-            intensity = int(((y - (drop.y - drop.length)) / drop.length) * 255)
+            intensity = int(((y - tail_base) / drop.length) * 255)
             intensity = max(0, min(255, intensity))
-            r = int((rc["r"] / 255.0) * intensity)
-            g = int((rc["g"] / 255.0) * intensity)
-            b = int((rc["b"] / 255.0) * intensity)
-            fb.set_pixel(drop.x, y, (r, g, b))
+            fb.set_pixel(drop.x, y, gradient[intensity])
 
         head_y = int(drop.y)
         if 0 <= head_y < 64:

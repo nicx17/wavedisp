@@ -41,6 +41,15 @@ const rgbToHex = (r, g, b) => {
   return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
 };
 
+const valuesEqual = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+const diffConfig = (previous, next) => {
+  if (!previous) return next;
+  return Object.fromEntries(
+    Object.entries(next).filter(([key, value]) => !valuesEqual(previous[key], value)),
+  );
+};
+
 function PresetsPanel({ config, updateConfig, activePreset, setActivePreset }) {
   const [loading, setLoading] = useState(false);
   const slots = Array.from({ length: 10 }, (_, i) => i + 1);
@@ -55,7 +64,7 @@ function PresetsPanel({ config, updateConfig, activePreset, setActivePreset }) {
       if (data.status === "success") {
         const cfgRes = await fetch("/api/config");
         const newConfig = await cfgRes.json();
-        updateConfig(newConfig);
+        updateConfig(newConfig, "server_refresh");
       }
     } catch (err) {
       console.error(err);
@@ -552,19 +561,33 @@ function App() {
   }, []);
 
   const updateConfig = (newConfig, source = null) => {
+    const patch = diffConfig(config, newConfig);
     setConfig(newConfig);
     if (source !== "preset_load" && source !== "preset_rename") {
       setActivePreset(null);
     }
-    pendingConfigRef.current = newConfig;
+
+    if (
+      source === "preset_load" ||
+      source === "server_refresh" ||
+      Object.keys(patch).length === 0
+    ) {
+      return;
+    }
+
+    pendingConfigRef.current = {
+      ...(pendingConfigRef.current || {}),
+      ...patch,
+    };
 
     if (!updateTimeoutRef.current) {
       updateTimeoutRef.current = setTimeout(() => {
         fetch("/api/config", {
-          method: "POST",
+          method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(pendingConfigRef.current),
         }).catch((err) => console.error("Update failed:", err));
+        pendingConfigRef.current = null;
         updateTimeoutRef.current = null;
       }, 30); // 33 FPS Network Throttle
     }

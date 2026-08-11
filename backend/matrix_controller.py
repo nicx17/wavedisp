@@ -16,28 +16,29 @@ Instead of manual `time.sleep()`, frame pacing is naturally regulated by `SwapOn
 
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements,bare-except,invalid-name,global-statement
 
+import io
+import queue
+import signal
+import threading
 import time
 import types
-import threading
-import queue
-import io
-import signal
+
 from rgbmatrix import RGBMatrix, RGBMatrixOptions
-from backend.rendering_utils import get_framebuffer
-from backend.modes.clock import draw_clock
-from backend.modes.warning import draw_warning
-from backend.modes.smiley import draw_smiley
-from backend.modes.alarm import draw_alarm
-from backend.modes.rain import draw_matrix_rain
-from backend.modes.life import draw_game_of_life
-from backend.modes.bad_apple import draw_bad_apple
-from backend.modes.grid import draw_layout_grid
-from backend.modes.qrcode_mode import draw_qrcode
-from backend.modes.draw_mode import draw_canvas
-from backend.modes.spotify_mode import draw_spotify
-from backend.modes.stopwatch import draw_stopwatch
 
 import backend.modes.bad_apple as bad_apple_mod
+from backend.modes.alarm import draw_alarm
+from backend.modes.bad_apple import draw_bad_apple
+from backend.modes.clock import draw_clock
+from backend.modes.draw_mode import draw_canvas
+from backend.modes.grid import draw_layout_grid
+from backend.modes.life import draw_game_of_life
+from backend.modes.qrcode_mode import draw_qrcode
+from backend.modes.rain import draw_matrix_rain
+from backend.modes.smiley import draw_smiley
+from backend.modes.spotify_mode import draw_spotify
+from backend.modes.stopwatch import draw_stopwatch
+from backend.modes.warning import draw_warning
+from backend.rendering_utils import get_framebuffer
 
 # --- STREAM WORKER THREAD ---
 stream_queue = queue.Queue(maxsize=2)
@@ -56,7 +57,7 @@ def stream_worker(shared_state):
 
 
 # --- MAIN LOOP ---
-def matrix_loop(shared_state, shared_lock):
+def matrix_loop(shared_state, shared_lock, dirty_flag=None):
     with shared_lock:
         initial_slowdown = shared_state.get("gpio_slowdown", 2)
         initial_mapping = shared_state.get("hardware_mapping", "regular")
@@ -76,8 +77,6 @@ def matrix_loop(shared_state, shared_lock):
     current_slowdown = initial_slowdown
     current_mapping = initial_mapping
 
-    current_mapping = initial_mapping
-
     current_mode = ""
     frame_count = 0
     fb = get_framebuffer()
@@ -95,8 +94,12 @@ def matrix_loop(shared_state, shared_lock):
     while True:
         loop_start = time.time()
 
-        # Ultra-fast IPC check (fetching a single float without full dictionary copy)
-        remote_last_updated = shared_state.get("_last_updated", 1.0)
+        # Read the shared-memory dirty flag without hitting the Manager process.
+        remote_last_updated = (
+            dirty_flag.value
+            if dirty_flag is not None
+            else shared_state.get("_last_updated", 1.0)
+        )
 
         # Only perform the expensive full dictionary IPC serialization if config changed
         if remote_last_updated != local_last_updated or state_snapshot is None:
@@ -174,7 +177,7 @@ def matrix_loop(shared_state, shared_lock):
                 stream_queue.put(fb.img.copy())
 
         # Push to Hardware
-        offscreen_canvas.SetImage(fb.img.convert("RGB"))
+        offscreen_canvas.SetImage(fb.img)
         offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
         frame_count += 1
 
@@ -184,6 +187,6 @@ def matrix_loop(shared_state, shared_lock):
             time.sleep(target_frame_time - elapsed)
 
 
-def start_matrix_process(shared_state, shared_lock):
+def start_matrix_process(shared_state, shared_lock, dirty_flag=None):
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Let parent handle KeyboardInterrupt
-    matrix_loop(shared_state, shared_lock)
+    matrix_loop(shared_state, shared_lock, dirty_flag)

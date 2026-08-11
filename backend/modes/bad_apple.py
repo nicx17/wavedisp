@@ -7,6 +7,9 @@ Bad_Apple drawing mode.
 import os
 import time
 
+import numpy as np
+from PIL import Image
+
 bad_apple_data = None
 bad_apple_missing = False
 start_time_bad_apple = 0
@@ -50,14 +53,8 @@ def draw_bad_apple(fb, state):
 
     invert = getattr(state, "badapple_invert", False)
 
-    for y in range(64):
-        row_offset = y * 8
-        for byte_idx in range(8):
-            b = frame_bytes[row_offset + byte_idx]
-            for bit in range(8):
-                is_on = (b >> (7 - bit)) & 1
-                if invert:
-                    is_on = not is_on
-                if is_on:
-                    x = byte_idx * 8 + bit
-                    fb.set_pixel(x, y, (255, 255, 255))
+    frame = np.unpackbits(np.frombuffer(frame_bytes, dtype=np.uint8)).reshape(64, 64)
+    if invert:
+        frame = 1 - frame
+    mask = Image.fromarray((frame * 255).astype(np.uint8), mode="L")
+    fb.img.paste((255, 255, 255), mask=mask)

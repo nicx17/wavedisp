@@ -2,6 +2,7 @@ fastapi
 uvicorn
 pydantic
 pillow
+numpy
 requests
 spotipy
 segno

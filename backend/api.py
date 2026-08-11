@@ -13,17 +13,34 @@ It only calls `config_state.save()` AFTER the lock is released. Because SD card 
 
 import os
 import time
-from fastapi import FastAPI
+
+from fastapi import Body, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from backend.config import ConfigModel, save_debounced
-from backend.spotify_manager import get_auth_manager
 from backend.settings import env, resolve_path
+from backend.spotify_manager import get_auth_manager
 
 app = FastAPI()
 
+
+class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+    """Prevent browsers from caching index.html so deploys are always picked up."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
+app.add_middleware(NoCacheHTMLMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,12 +51,33 @@ app.add_middleware(
 
 shared_state = None
 shared_lock = None
+dirty_flag = None
 
 
-def set_shared_state(state, lock):
-    global shared_state, shared_lock
+def set_shared_state(state, lock, flag=None):
+    global shared_state, shared_lock, dirty_flag
     shared_state = state
     shared_lock = lock
+    dirty_flag = flag
+
+
+def mark_state_dirty():
+    """Update both legacy and shared-memory change markers."""
+    now = time.time()
+    shared_state["_last_updated"] = now
+    if dirty_flag is not None:
+        dirty_flag.value = now
+    return now
+
+
+def validated_patch_state(patch_data):
+    with shared_lock:
+        state_copy = dict(shared_state)
+        state_copy.update(patch_data)
+        validated = ConfigModel(**state_copy).model_dump()
+        for k in patch_data:
+            shared_state[k] = validated[k]
+        mark_state_dirty()
 
 
 class StopwatchAction(BaseModel):
@@ -85,8 +123,7 @@ def generate_frames():
             frame_bytes = shared_state.get("_framebuffer_bytes")
         if frame_bytes:
             yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
             )
         time.sleep(0.1)
 
@@ -105,8 +142,26 @@ def update_config(new_config: ConfigModel):
     with shared_lock:
         for k, v in new_config.model_dump().items():
             shared_state[k] = v
-        shared_state["_last_updated"] = time.time()
+        mark_state_dirty()
     # Save outside the lock to prevent rendering stutter
+    save_debounced(shared_state, 0.5)
+    return {"status": "success"}
+
+
+@app.patch("/api/config")
+def patch_config(patch_data: dict = Body(...)):
+    """Update only changed config keys, validating against the full config schema."""
+    allowed_keys = set(ConfigModel.model_fields)
+    invalid_keys = set(patch_data) - allowed_keys
+    if invalid_keys:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown config keys: {', '.join(sorted(invalid_keys))}",
+        )
+    try:
+        validated_patch_state(patch_data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     save_debounced(shared_state, 0.5)
     return {"status": "success"}
 
@@ -130,7 +185,7 @@ def update_stopwatch(payload: StopwatchAction):
             shared_state["sw_start_time"] = 0.0
             shared_state["sw_state"] = "stopped"
 
-        shared_state["_last_updated"] = time.time()
+        mark_state_dirty()
 
     save_debounced(shared_state, 0.5)
     return {"status": "success"}
@@ -153,7 +208,7 @@ def handle_spotify_callback(payload: SpotifyCallbackRequest):
                 shared_state["spotify_client_id"] = payload.client_id
                 shared_state["spotify_client_secret"] = payload.client_secret
                 shared_state["spotify_linked"] = True
-                shared_state["_last_updated"] = time.time()
+                mark_state_dirty()
             save_debounced(shared_state, 0.5)
             return {"status": "success"}
     except Exception as e:
@@ -168,7 +223,7 @@ def unlink_spotify():
         shared_state["spotify_client_id"] = ""
         shared_state["spotify_client_secret"] = ""
         shared_state["spotify_image_bytes"] = b""
-        shared_state["_last_updated"] = time.time()
+        mark_state_dirty()
     save_debounced(shared_state, 0.5)
     return {"status": "success"}
 
@@ -189,14 +244,14 @@ def save_preset(slot_id: str):
             "spotify_linked",
             "spotify_image_bytes",
         ]
-        keys_to_remove.extend([k for k in current_state.keys() if k.startswith("_")])
+        keys_to_remove.extend([k for k in current_state if k.startswith("_")])
         for key in keys_to_remove:
             current_state.pop(key, None)
 
         presets = dict(shared_state.get("presets", {}))
         presets[slot_id] = current_state
         shared_state["presets"] = presets
-        shared_state["_last_updated"] = time.time()
+        mark_state_dirty()
 
     save_debounced(shared_state, 0.5)
     return {"status": "success"}
@@ -205,17 +260,19 @@ def save_preset(slot_id: str):
 @app.post("/api/presets/load/{slot_id}")
 def load_preset(slot_id: str):
     from backend.config import apply_preset
-    
+
     with shared_lock:
         presets = shared_state.get("presets", {})
         target_preset = presets.get(slot_id)
         if not target_preset:
             return {"status": "error", "message": "Preset is empty"}
-            
+
         success = apply_preset(shared_state, target_preset)
         if not success:
             return {"status": "error", "message": "Failed to apply preset"}
-            
+        if dirty_flag is not None:
+            dirty_flag.value = shared_state.get("_last_updated", time.time())
+
     save_debounced(shared_state, 0.5)
     return {"status": "success"}
 
