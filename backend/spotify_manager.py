@@ -19,8 +19,7 @@ from backend.settings import env
 SPOTIFY_CACHE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), ".spotify_caches"
 )
-if not os.path.exists(SPOTIFY_CACHE_PATH):
-    os.makedirs(SPOTIFY_CACHE_PATH)
+os.makedirs(SPOTIFY_CACHE_PATH, exist_ok=True)
 
 
 def get_auth_manager(client_id, client_secret):
@@ -34,64 +33,57 @@ def get_auth_manager(client_id, client_secret):
     )
 
 
-def start_spotify_poller(shared_state, shared_lock, dirty_flag=None):
-    """Starts a daemon thread that polls the Spotify API every 5 seconds."""
+def fetch_album_art(url):
+    """Download album art and return it as 64x64 raw RGB bytes."""
+    response = requests.get(url, timeout=5)
+    response.raise_for_status()
+    img = Image.open(io.BytesIO(response.content)).convert("RGB")
+    return img.resize((64, 64), Image.Resampling.LANCZOS).tobytes()
+
+
+def start_spotify_poller(store, interval=5):
+    """Starts a daemon thread that polls the Spotify API every few seconds."""
     thread = threading.Thread(
-        target=_spotify_poll_loop,
-        args=(shared_state, shared_lock, dirty_flag),
-        daemon=True,
+        target=_spotify_poll_loop, args=(store, interval), daemon=True, name="Spotify"
     )
     thread.start()
+    return thread
 
 
-def _spotify_poll_loop(shared_state, shared_lock, dirty_flag=None):
+def _spotify_poll_loop(store, interval):
     last_track_id = None
+    auth_manager = None
+    client = None
+    client_key = None
 
     while True:
-        with shared_lock:
-            state_snapshot = dict(shared_state)
-        mode = state_snapshot.get("mode")
-        linked = state_snapshot.get("spotify_linked")
-        client_id = state_snapshot.get("spotify_client_id")
-        client_secret = state_snapshot.get("spotify_client_secret")
+        try:
+            if store.get("mode") == "spotify" and store.get("spotify_linked"):
+                creds = (
+                    store.get("spotify_client_id"),
+                    store.get("spotify_client_secret"),
+                )
+                if all(creds) and creds != client_key:
+                    auth_manager = get_auth_manager(*creds)
+                    client = spotipy.Spotify(auth_manager=auth_manager)
+                    client_key = creds
+                    last_track_id = None
+                # Without a cached token spotipy would fall back to an interactive
+                # stdin prompt, which would hang this thread under systemd.
+                if all(creds) and auth_manager.get_cached_token():
+                    current_track = client.current_user_playing_track()
+                    item = (current_track or {}).get("item")
+                    # Re-fetch when the track changes, or when the art was cleared
+                    # (e.g. after unlinking and re-linking during the same song).
+                    if item and (
+                        item["id"] != last_track_id or not store.spotify_image
+                    ):
+                        images = item["album"]["images"]
+                        if images:
+                            # Smallest image is last (64x64 or 300x300)
+                            store.set_spotify_image(fetch_album_art(images[-1]["url"]))
+                            last_track_id = item["id"]
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print(f"Spotify Poll Error: {e}")
 
-        if mode == "spotify" and linked and client_id and client_secret:
-            try:
-                auth_manager = get_auth_manager(client_id, client_secret)
-                token_info = auth_manager.get_cached_token()
-
-                if token_info:
-                    sp = spotipy.Spotify(auth_manager=auth_manager)
-                    # Use official OpenAPI compliant endpoint
-                    current_track = sp.current_user_playing_track()
-
-                    if current_track and current_track.get("item"):
-                        track_id = current_track["item"]["id"]
-
-                        if track_id != last_track_id:
-                            # Song changed! Download album art
-                            images = current_track["item"]["album"]["images"]
-                            if images:
-                                # Get the smallest image that is >= 64x64, usually the last one (64x64 or 300x300)
-                                img_url = images[-1]["url"]
-                                response = requests.get(img_url, timeout=5)
-                                if response.status_code == 200:
-                                    img = Image.open(
-                                        io.BytesIO(response.content)
-                                    ).convert("RGB")
-                                    img = img.resize((64, 64), Image.Resampling.LANCZOS)
-
-                                    with shared_lock:
-                                        shared_state["spotify_image_bytes"] = (
-                                            img.tobytes()
-                                        )
-                                        now = time.time()
-                                        shared_state["_last_updated"] = now
-                                    if dirty_flag is not None:
-                                        dirty_flag.value = now
-
-                                    last_track_id = track_id
-            except Exception as e:
-                print(f"Spotify Poll Error: {e}")
-
-        time.sleep(5)
+        time.sleep(interval)

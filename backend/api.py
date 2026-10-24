@@ -2,86 +2,119 @@
 FastAPI application defining the endpoints for the Web Dashboard.
 
 ARCHITECTURE OVERVIEW:
-The API runs via Uvicorn in the main application thread. It exposes GET and POST endpoints to interface with the web dashboard.
-It modifies a single global `config_state` object which is simultaneously read by the `matrix_controller` thread.
+The API runs via Uvicorn in the main process. Every config change goes through the
+`StateStore` (backend/state.py), which validates it, publishes it to the render
+process and schedules a debounced save. Handlers never touch the disk directly, so
+slow SD card writes can't delay a response or the display.
 
-LOCKING & PERFORMANCE:
-To prevent race conditions, `state_lock` (a threading.Lock) is used.
-CRITICAL: When the `update_config` POST route receives new data, it locks the state, updates memory, and immediately UNLOCKS.
-It only calls `config_state.save()` AFTER the lock is released. Because SD card I/O is very slow (tens of milliseconds), keeping the lock during file saving would cause the LED matrix thread to stall and skip frames, resulting in visible visual stutter.
+SECURITY:
+The dashboard is served from this same origin, so browsers need no CORS access.
+Cross-origin browser writes are rejected (a web page you visit must not be able to
+drive the display), and the Spotify client secret is never returned by the API.
+Requests without an Origin header (curl, Home Assistant, scripts) are unaffected.
 """
 
+import asyncio
+import io
 import os
-import time
+from contextlib import asynccontextmanager
+from typing import Literal
+from urllib.parse import urlsplit
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from pydantic import BaseModel
-from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.config import ConfigModel, save_debounced
+from backend.config import PublicConfig
 from backend.settings import env, resolve_path
 from backend.spotify_manager import get_auth_manager
+from backend.state import ConfigError
 
-app = FastAPI()
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+STREAM_FPS = 15
+STREAM_KEEPALIVE_S = 1.0
 
 
-class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+class NoCacheHTMLMiddleware:
     """Prevent browsers from caching index.html so deploys are always picked up."""
 
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        if request.url.path == "/" or request.url.path.endswith(".html"):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        return response
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if path != "/" and not path.endswith(".html"):
+            return await self.app(scope, receive, send)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers += [
+                    (b"cache-control", b"no-cache, no-store, must-revalidate"),
+                    (b"pragma", b"no-cache"),
+                    (b"expires", b"0"),
+                ]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
-app.add_middleware(NoCacheHTMLMiddleware)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+class SameOriginWritesMiddleware:
+    """Reject state-changing browser requests that come from another origin (CSRF)."""
 
-shared_state = None
-shared_lock = None
-dirty_flag = None
+    def __init__(self, app, allowed_origins=()):
+        self.app = app
+        self.allowed = frozenset(allowed_origins)
 
-
-def set_shared_state(state, lock, flag=None):
-    global shared_state, shared_lock, dirty_flag
-    shared_state = state
-    shared_lock = lock
-    dirty_flag = flag
-
-
-def mark_state_dirty():
-    """Update both legacy and shared-memory change markers."""
-    now = time.time()
-    shared_state["_last_updated"] = now
-    if dirty_flag is not None:
-        dirty_flag.value = now
-    return now
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] == "http"
+            and scope["method"] not in SAFE_METHODS
+            and scope["path"].startswith("/api/")
+        ):
+            headers = dict(scope.get("headers", []))
+            origin = headers.get(b"origin", b"").decode("latin-1")
+            host = headers.get(b"host", b"").decode("latin-1")
+            if (
+                origin
+                and origin not in self.allowed
+                and urlsplit(origin).netloc != host
+            ):
+                response = JSONResponse(
+                    {"detail": "Cross-origin requests are not allowed"}, status_code=403
+                )
+                return await response(scope, receive, send)
+        await self.app(scope, receive, send)
 
 
-def validated_patch_state(patch_data):
-    with shared_lock:
-        state_copy = dict(shared_state)
-        state_copy.update(patch_data)
-        validated = ConfigModel(**state_copy).model_dump()
-        for k in patch_data:
-            shared_state[k] = validated[k]
-        mark_state_dirty()
+class PreviewEncoder:
+    """JPEG-encodes the latest frame once, however many dashboards are watching."""
+
+    def __init__(self, frames):
+        self.frames = frames
+        self._seq = 0
+        self._jpeg = b""
+
+    def latest(self):
+        seq = self.frames.seq
+        if seq != self._seq:
+            seq, raw = self.frames.read()
+            if raw:
+                buf = io.BytesIO()
+                Image.frombytes("RGB", (64, 64), raw).save(
+                    buf, format="JPEG", quality=75
+                )
+                self._jpeg = buf.getvalue()
+            self._seq = seq
+        return self._seq, self._jpeg
 
 
 class StopwatchAction(BaseModel):
-    action: str
+    action: Literal["start", "stop", "reset"]
 
 
 class SpotifyAuthRequest(BaseModel):
@@ -95,193 +128,146 @@ class SpotifyCallbackRequest(BaseModel):
     url: str
 
 
-@app.get("/api/config", response_model=ConfigModel)
-def get_config():
-    """Retrieve the current matrix configuration state."""
-    with shared_lock:
-        state_copy = shared_state.copy()
-
-        # Sanitize presets to remove private/byte keys that may have leaked
-        presets = state_copy.get("presets", {})
-        clean_presets = {}
-        for slot, preset_data in presets.items():
-            if isinstance(preset_data, dict):
-                clean_presets[slot] = {
-                    k: v
-                    for k, v in preset_data.items()
-                    if not k.startswith("_") and k != "spotify_image_bytes"
-                }
-        state_copy["presets"] = clean_presets
-
-        return ConfigModel(**state_copy)
+def _cors_origins():
+    raw = env("WAVEDISP_CORS_ORIGINS", "")
+    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 
 
-def generate_frames():
-    """Generator for streaming JPEG frames."""
-    while True:
-        with shared_lock:
-            frame_bytes = shared_state.get("_framebuffer_bytes")
-        if frame_bytes:
-            yield (
-                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-            )
-        time.sleep(0.1)
+def create_app(store, frames=None, dashboard_dist=None):
+    @asynccontextmanager
+    async def lifespan(_app):
+        yield
+        store.saver.flush()  # don't lose a debounced save on shutdown
 
-
-@app.get("/api/stream")
-def stream_matrix():
-    """MJPEG stream of the matrix framebuffer."""
-    return StreamingResponse(
-        generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame"
-    )
-
-
-@app.post("/api/config")
-def update_config(new_config: ConfigModel):
-    """Update the matrix configuration state and persist to disk."""
-    with shared_lock:
-        for k, v in new_config.model_dump().items():
-            shared_state[k] = v
-        mark_state_dirty()
-    # Save outside the lock to prevent rendering stutter
-    save_debounced(shared_state, 0.5)
-    return {"status": "success"}
-
-
-@app.patch("/api/config")
-def patch_config(patch_data: dict = Body(...)):
-    """Update only changed config keys, validating against the full config schema."""
-    allowed_keys = set(ConfigModel.model_fields)
-    invalid_keys = set(patch_data) - allowed_keys
-    if invalid_keys:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown config keys: {', '.join(sorted(invalid_keys))}",
+    app = FastAPI(title="WaveDisp", lifespan=lifespan)
+    cors_origins = _cors_origins()
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
-    try:
-        validated_patch_state(patch_data)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    save_debounced(shared_state, 0.5)
-    return {"status": "success"}
+    app.add_middleware(SameOriginWritesMiddleware, allowed_origins=cors_origins)
+    app.add_middleware(NoCacheHTMLMiddleware)
 
+    encoder = PreviewEncoder(frames) if frames is not None else None
 
-@app.post("/api/stopwatch")
-def update_stopwatch(payload: StopwatchAction):
-    """Handle precise start/stop/reset actions for the stopwatch."""
-    with shared_lock:
-        if payload.action == "start":
-            if shared_state["sw_state"] != "running":
-                shared_state["sw_start_time"] = time.time()
-                shared_state["sw_state"] = "running"
-        elif payload.action == "stop":
-            if shared_state["sw_state"] == "running":
-                shared_state["sw_elapsed"] += (
-                    time.time() - shared_state["sw_start_time"]
-                )
-                shared_state["sw_state"] = "stopped"
-        elif payload.action == "reset":
-            shared_state["sw_elapsed"] = 0.0
-            shared_state["sw_start_time"] = 0.0
-            shared_state["sw_state"] = "stopped"
+    def ok(version):
+        return {"status": "success", "version": version}
 
-        mark_state_dirty()
+    @app.get("/api/config", response_model=PublicConfig)
+    def get_config(response: Response):
+        """Retrieve the current matrix configuration state."""
+        response.headers["X-Config-Version"] = str(store.version)
+        return store.public_config()
 
-    save_debounced(shared_state, 0.5)
-    return {"status": "success"}
+    @app.get("/api/version")
+    def get_version():
+        """Cheap change detection for dashboards: bumps on every state change."""
+        return {"version": store.version}
 
+    @app.post("/api/config")
+    def update_config(new_config: PublicConfig):
+        """Replace the full public config. Read-only keys are ignored."""
+        try:
+            return ok(store.replace(new_config.model_dump()))
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-@app.post("/api/spotify/auth_url")
-def get_spotify_auth_url(payload: SpotifyAuthRequest):
-    auth_manager = get_auth_manager(payload.client_id, payload.client_secret)
-    return {"url": auth_manager.get_authorize_url()}
+    @app.patch("/api/config")
+    def patch_config(patch_data: dict = Body(...)):
+        """Update only the given keys, validated against the full config schema."""
+        try:
+            return ok(store.patch(patch_data))
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.get("/api/stream")
+    async def stream_matrix():
+        """MJPEG stream of the matrix framebuffer."""
+        if encoder is None:
+            raise HTTPException(status_code=503, detail="Preview unavailable")
 
-@app.post("/api/spotify/callback")
-def handle_spotify_callback(payload: SpotifyCallbackRequest):
-    try:
+        async def frames_gen():
+            last_seq = None
+            last_sent = 0.0
+            loop = asyncio.get_running_loop()
+            while True:
+                seq, jpeg = encoder.latest()
+                now = loop.time()
+                # Send new frames, and repeat the last one periodically so a static
+                # display (e.g. a clock between seconds) still renders in browsers.
+                if jpeg and (seq != last_seq or now - last_sent >= STREAM_KEEPALIVE_S):
+                    yield (
+                        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                        + str(len(jpeg)).encode()
+                        + b"\r\n\r\n"
+                        + jpeg
+                        + b"\r\n"
+                    )
+                    last_seq, last_sent = seq, now
+                await asyncio.sleep(1.0 / STREAM_FPS)
+
+        return StreamingResponse(
+            frames_gen(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.post("/api/stopwatch")
+    def update_stopwatch(payload: StopwatchAction):
+        """Handle precise start/stop/reset actions for the stopwatch."""
+        return ok(store.stopwatch(payload.action))
+
+    @app.post("/api/spotify/auth_url")
+    def get_spotify_auth_url(payload: SpotifyAuthRequest):
         auth_manager = get_auth_manager(payload.client_id, payload.client_secret)
-        code = auth_manager.parse_response_code(payload.url)
-        if code:
-            auth_manager.get_access_token(code)
-            with shared_lock:
-                shared_state["spotify_client_id"] = payload.client_id
-                shared_state["spotify_client_secret"] = payload.client_secret
-                shared_state["spotify_linked"] = True
-                mark_state_dirty()
-            save_debounced(shared_state, 0.5)
-            return {"status": "success"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-    return {"status": "error", "message": "Invalid callback URL"}
+        return {"url": auth_manager.get_authorize_url()}
 
+    @app.post("/api/spotify/callback")
+    def handle_spotify_callback(payload: SpotifyCallbackRequest):
+        try:
+            auth_manager = get_auth_manager(payload.client_id, payload.client_secret)
+            code = auth_manager.parse_response_code(payload.url)
+            if code and code != payload.url:
+                auth_manager.get_access_token(code, as_dict=False)
+                return ok(
+                    store.set_spotify_link(
+                        payload.client_id, payload.client_secret, True
+                    )
+                )
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": "Invalid callback URL"}, status_code=400
+        )
 
-@app.post("/api/spotify/unlink")
-def unlink_spotify():
-    with shared_lock:
-        shared_state["spotify_linked"] = False
-        shared_state["spotify_client_id"] = ""
-        shared_state["spotify_client_secret"] = ""
-        shared_state["spotify_image_bytes"] = b""
-        mark_state_dirty()
-    save_debounced(shared_state, 0.5)
-    return {"status": "success"}
+    @app.post("/api/spotify/unlink")
+    def unlink_spotify():
+        return ok(store.set_spotify_link("", "", False))
 
+    @app.post("/api/presets/save/{slot_id}")
+    def save_preset(slot_id: str):
+        try:
+            return ok(store.save_preset(slot_id))
+        except ConfigError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-@app.post("/api/presets/save/{slot_id}")
-def save_preset(slot_id: str):
-    valid_slots = [f"slot_{i}" for i in range(1, 11)]
-    if slot_id not in valid_slots:
-        return {"status": "error", "message": "Invalid slot"}
+    @app.post("/api/presets/load/{slot_id}")
+    def load_preset(slot_id: str):
+        try:
+            if not store.load_preset(slot_id):
+                raise HTTPException(status_code=404, detail="Preset is empty")
+        except ConfigError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return ok(store.version)
 
-    with shared_lock:
-        current_state = dict(shared_state)
-        # Scrub non-preset keys and private keys
-        keys_to_remove = [
-            "presets",
-            "spotify_client_id",
-            "spotify_client_secret",
-            "spotify_linked",
-            "spotify_image_bytes",
-        ]
-        keys_to_remove.extend([k for k in current_state if k.startswith("_")])
-        for key in keys_to_remove:
-            current_state.pop(key, None)
-
-        presets = dict(shared_state.get("presets", {}))
-        presets[slot_id] = current_state
-        shared_state["presets"] = presets
-        mark_state_dirty()
-
-    save_debounced(shared_state, 0.5)
-    return {"status": "success"}
-
-
-@app.post("/api/presets/load/{slot_id}")
-def load_preset(slot_id: str):
-    from backend.config import apply_preset
-
-    with shared_lock:
-        presets = shared_state.get("presets", {})
-        target_preset = presets.get(slot_id)
-        if not target_preset:
-            return {"status": "error", "message": "Preset is empty"}
-
-        success = apply_preset(shared_state, target_preset)
-        if not success:
-            return {"status": "error", "message": "Failed to apply preset"}
-        if dirty_flag is not None:
-            dirty_flag.value = shared_state.get("_last_updated", time.time())
-
-    save_debounced(shared_state, 0.5)
-    return {"status": "success"}
-
-
-# Serve dashboard statically when the Vite build output exists.
-dashboard_dist = resolve_path(env("WAVEDISP_DASHBOARD_DIST", "dashboard/dist"))
-if os.path.isdir(dashboard_dist):
-    app.mount(
-        "/",
-        StaticFiles(directory=dashboard_dist, html=True),
-        name="static",
+    # Serve dashboard statically when the Vite build output exists.
+    dist = dashboard_dist or resolve_path(
+        env("WAVEDISP_DASHBOARD_DIST", "dashboard/dist")
     )
+    if os.path.isdir(dist):
+        app.mount("/", StaticFiles(directory=dist, html=True), name="static")
+
+    return app

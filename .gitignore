@@ -20,6 +20,8 @@ Thumbs.db
 backend/config.json
 backend/config.json.tmp
 backend/.spotify_caches/
+backend/.font_cache/
+.pytest_cache/
 certs/*
 !certs/.gitkeep
 

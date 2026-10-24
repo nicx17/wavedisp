@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 
 life_board = np.random.randint(0, 2, (64, 64), dtype=np.uint8)
+_last_generation = None
 
 
 def update_life():
@@ -26,10 +27,19 @@ def update_life():
     return changes
 
 
-def draw_game_of_life(fb, frame_count, state):
-    global life_board
+def generation(state, ctx):
     update_interval = max(1, int(20 - state.life_speed))
-    if frame_count % update_interval == 0:
+    return ctx.tick // update_interval
+
+
+def frame_key(state, ctx):
+    return generation(state, ctx)
+
+
+def draw_game_of_life(fb, gen, state):
+    global life_board, _last_generation
+    if gen != _last_generation:
+        _last_generation = gen
         changes = update_life()
         if changes < 3:
             life_board = np.random.randint(0, 2, (64, 64), dtype=np.uint8)
@@ -37,3 +47,7 @@ def draw_game_of_life(fb, frame_count, state):
     lc = state.life_color
     mask = Image.fromarray((life_board * 255).astype(np.uint8), mode="L")
     fb.img.paste((lc["r"], lc["g"], lc["b"]), mask=mask)
+
+
+def draw(fb, state, ctx):
+    draw_game_of_life(fb, generation(state, ctx), state)

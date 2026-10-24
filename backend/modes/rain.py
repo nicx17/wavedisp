@@ -33,9 +33,16 @@ def get_gradient(color):
     return gradient
 
 
-def draw_matrix_rain(fb, state):
+def frame_key(state, ctx):
+    return ctx.tick
+
+
+def draw_matrix_rain(fb, state, steps=1):
+    """Advance the rain by `steps` ticks and draw it."""
     rc = state.rain_color
-    mult = state.rain_speed / 10.0
+    mult = state.rain_speed / 10.0 * steps
+    gradient = get_gradient(rc)
+    pixels = fb.pixels
 
     for drop in rain_drops:
         drop.y += drop.speed * mult
@@ -45,15 +52,20 @@ def draw_matrix_rain(fb, state):
             drop.speed = random.uniform(1.0, 3.0)
             drop.length = random.randint(10, 25)
 
+        x = drop.x
         tail_start = max(0, int(drop.y - drop.length))
         tail_end = min(64, int(drop.y))
-        gradient = get_gradient(rc)
         tail_base = drop.y - drop.length
+        scale = 255 / drop.length
         for y in range(tail_start, tail_end):
-            intensity = int(((y - tail_base) / drop.length) * 255)
-            intensity = max(0, min(255, intensity))
-            fb.set_pixel(drop.x, y, gradient[intensity])
+            intensity = int((y - tail_base) * scale)
+            pixels[x, y] = gradient[0 if intensity < 0 else min(255, intensity)]
 
         head_y = int(drop.y)
         if 0 <= head_y < 64:
-            fb.set_pixel(drop.x, head_y, (255, 255, 255))
+            pixels[x, head_y] = (255, 255, 255)
+
+
+def draw(fb, state, ctx):
+    # Cap catch-up so a stalled frame doesn't teleport every drop off-screen.
+    draw_matrix_rain(fb, state, min(ctx.steps, 12))

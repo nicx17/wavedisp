@@ -70,6 +70,38 @@ sudo .venv/bin/python backend/main.py
 
 The API listens on port `5000` by default.
 
+### Running without a Pi (emulator)
+
+Set `WAVEDISP_EMULATE_MATRIX=true` to replace the hardware driver with an in-process stand-in. Everything renders exactly as on the panel and is visible through the dashboard's live preview, which is handy for UI work, screenshots, and testing on a laptop:
+
+```bash
+WAVEDISP_EMULATE_MATRIX=true .venv/bin/python backend/main.py
+```
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite covers config validation, presets, the API (including the security checks), and the render loop (frame skipping, fades, error recovery) using the emulator, so it runs anywhere.
+
+## Architecture
+
+```
+main process                                   matrix process (owns the panel)
+ ├─ FastAPI / Uvicorn  ─┐                       ├─ render loop (120 Hz cap)
+ ├─ scheduler thread    ├─▶ StateStore ─ snapshot ─▶│   skips frames whose content
+ └─ Spotify poller     ─┘   (validates,   (shared   │   hasn't changed
+                             persists)     memory)  └─ hzeller refresh thread (C++)
+        ◀──────────────── latest frame (shared memory) ─ for the live preview
+```
+
+- **One writer, shared-memory snapshots.** All config writes happen in the main process through `backend/state.py`, which validates, persists (debounced, atomic writes), and publishes a snapshot to the renderer through `backend/channels.py`. There is no `multiprocessing.Manager` round-trip on the hot path.
+- **Frame skipping.** Each mode reports a `frame_key` that changes only when its picture would change. A plain clock redraws once per second, static modes (QR, drawing, album art, off) only on config changes. On a Pi Zero 2 W this took the render thread from ~75% to ~1% CPU for the clock.
+- **Supervision.** A failing frame is logged and blanked rather than killing the renderer. If the render process does die, the service exits so systemd restarts it, instead of leaving a healthy-looking dashboard in front of a frozen panel. On shutdown the panel is cleared.
+
 ## Configuration Reference (`.env`)
 
 WaveDisp relies on environment variables for deployment and backend configuration. 
@@ -85,6 +117,9 @@ WaveDisp relies on environment variables for deployment and backend configuratio
 | `WAVEDISP_CONFIG_FILE` | `backend/config.json` | Path where persistent matrix state is saved. |
 | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:5000/callback` | OAuth redirect URI for Spotify integrations. |
 | `RGB_MATRIX_FONTS_DIR` | *(empty)* | Optional path to custom `.bdf` fonts. Overrides default font lookup. |
+| `WAVEDISP_FONT_CACHE_DIR` | `backend/.font_cache` | Where compiled `.bdf` fonts are cached. |
+| `WAVEDISP_EMULATE_MATRIX` | `false` | Run without LED hardware (see *Running without a Pi*). |
+| `WAVEDISP_CORS_ORIGINS` | *(empty)* | Comma-separated extra origins allowed to call the API from a browser. The bundled dashboard does not need this. |
 | `PI_USER` | `nick` | SSH user for `deploy.sh` script. |
 | `PI_HOST` | `192.168.0.208` | SSH host/IP for `deploy.sh` script. |
 | `PI_APP_DIR` | `/opt/wavedisp` | Target remote directory for `deploy.sh` script. |
@@ -99,6 +134,8 @@ cd dashboard
 npm install
 npm run dev
 ```
+
+The dev server proxies `/api` to `http://127.0.0.1:5000`. Point it at the Pi (or an emulator instance) with `WAVEDISP_BACKEND=https://raspberrypi.local:5000 npm run dev`.
 
 For production/static serving through FastAPI:
 
@@ -159,6 +196,18 @@ If the binary is missing, Bad Apple mode stays blank and logs a message instead 
    ```bash
    ./deploy.sh
    ```
+
+The script never overwrites device-local state on the Pi (`backend/config.json`, Spotify tokens, compiled fonts).
+
+## Security
+
+WaveDisp is designed for a trusted home network and has no login. Within that model:
+
+- The Spotify client secret is stored on the device but never returned by the API.
+- Browser requests that change state are only accepted from the dashboard's own origin, so a web page you happen to visit cannot drive the display or read its config. Scripts and automations without an `Origin` header (curl, Home Assistant) are unaffected.
+- Every config write is validated (ranges, enums, font file names), so bad input is rejected with `422` instead of reaching the renderer.
+
+If the device is reachable from outside your LAN, put it behind a VPN or an authenticating reverse proxy.
 
 ## API
 

@@ -7,11 +7,21 @@ Warning drawing mode.
 import math
 
 
+def is_lit(frame_count, state):
+    return math.sin(frame_count * (state.warning_blink_speed / 10.0)) > 0
+
+
+def frame_key(state, ctx):
+    return is_lit(ctx.tick, state)
+
+
+def draw(fb, state, ctx):
+    draw_warning(fb, ctx.tick, state)
+
+
 def draw_warning(fb, frame_count, state):
     # Sharp strobe blink (ON/OFF) instead of sine wave, but with a dim OFF state
-    pulse_val = (
-        1.0 if math.sin(frame_count * (state.warning_blink_speed / 10.0)) > 0 else 0.1
-    )
+    pulse_val = 1.0 if is_lit(frame_count, state) else 0.1
     r = int(state.warning_color["r"] * pulse_val)
     g = int(state.warning_color["g"] * pulse_val)
     b = int(state.warning_color["b"] * pulse_val)

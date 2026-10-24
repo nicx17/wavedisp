@@ -108,3 +108,11 @@ def draw_qrcode(fb, state):
             y += 1
 
     fb.img.paste(img, (x, y))
+
+
+def frame_key(state, ctx):
+    return int(ctx.now * 40) % 4 if getattr(state, "qr_wobble", False) else 0
+
+
+def draw(fb, state, ctx):
+    draw_qrcode(fb, state)

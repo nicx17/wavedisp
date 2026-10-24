@@ -9,10 +9,12 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-from backend.settings import PROJECT_ROOT, env
+from backend.settings import PROJECT_ROOT, env, resolve_path
+
+WIDTH = HEIGHT = 64
 
 # Global rendering buffers to prevent garbage collection overhead
-global_img = Image.new("RGB", (64, 64), (0, 0, 0))
+global_img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
 global_draw = ImageDraw.Draw(global_img)
 
 
@@ -20,12 +22,15 @@ class Framebuffer:
     def __init__(self):
         self.img = global_img
         self.draw = global_draw
+        # Direct pixel access is ~10x faster than ImageDraw.point per pixel.
+        self.pixels = global_img.load()
 
     def clear(self):
-        self.draw.rectangle([0, 0, 63, 63], fill=(0, 0, 0))
+        self.img.paste((0, 0, 0), (0, 0, WIDTH, HEIGHT))
 
     def set_pixel(self, x, y, color):
-        self.draw.point((x, y), fill=color)
+        if 0 <= x < WIDTH and 0 <= y < HEIGHT:
+            self.pixels[x, y] = color
 
     def draw_line(self, x1, y1, x2, y2, color, width=1):
         self.draw.line((x1, y1, x2, y2), fill=color, width=width)
@@ -40,7 +45,10 @@ class Framebuffer:
         self.draw.rectangle([x, y, x + w - 1, y + h - 1], fill=color)
 
     def draw_text(self, x, y, text, font, color):
-        self.draw.text((x, y), text, font=font, fill=color)
+        stamp = _text_stamp(font, text)
+        if stamp is not None:
+            mask, left, top = stamp
+            self.img.paste(color, (x + left, y + top), mask)
 
 
 def get_framebuffer():
@@ -49,11 +57,45 @@ def get_framebuffer():
     return fb
 
 
+# Text is re-rendered with identical arguments every frame (the same digits, in the
+# same font), so both measurements and glyph masks are memoised. Font objects are
+# cached forever by get_font, which keeps the keys stable.
+_width_cache = {}
+_stamp_cache = {}
+_TEXT_CACHE_LIMIT = 4096
+
+
 def get_text_width(draw, text, font):
-    try:
-        return int(draw.textbbox((0, 0), text, font=font)[2])
-    except Exception:
-        return int(draw.textlength(text, font=font))
+    key = (font, text)
+    width = _width_cache.get(key)
+    if width is None:
+        try:
+            width = int(draw.textbbox((0, 0), text, font=font)[2])
+        except Exception:
+            width = int(draw.textlength(text, font=font))
+        if len(_width_cache) >= _TEXT_CACHE_LIMIT:
+            _width_cache.clear()
+        _width_cache[key] = width
+    return width
+
+
+def _text_stamp(font, text):
+    """Return (mask, dx, dy) for `text`, or None when it has no visible ink."""
+    key = (font, text)
+    if key in _stamp_cache:
+        return _stamp_cache[key]
+
+    left, top, right, bottom = global_draw.textbbox((0, 0), text, font=font)
+    stamp = None
+    if right > left and bottom > top:
+        mask = Image.new("L", (right - left, bottom - top), 0)
+        ImageDraw.Draw(mask).text((-left, -top), text, font=font, fill=255)
+        stamp = (mask, left, top)
+
+    if len(_stamp_cache) >= _TEXT_CACHE_LIMIT:
+        _stamp_cache.clear()
+    _stamp_cache[key] = stamp
+    return stamp
 
 
 def draw_text_thick(fb, pos, text, font, color, thickness):
@@ -256,13 +298,33 @@ def draw_time_segments(
 _font_cache = {}
 _sys_fonts = None
 
+# Compiled BDF fonts (.pil/.pbm) live in a private directory rather than /tmp, where
+# a predictable path written by a root process is a symlink-attack target.
+FONT_CACHE_DIR = resolve_path(env("WAVEDISP_FONT_CACHE_DIR", "backend/.font_cache"))
+
+
+def _compiled_bdf_path(font_name, bdf_path):
+    pil_path = FONT_CACHE_DIR / f"{font_name}.pil"
+    if not pil_path.exists():
+        from PIL import BdfFontFile
+
+        try:
+            FONT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(bdf_path, "rb") as fp:
+                BdfFontFile.BdfFontFile(fp).save(str(pil_path))
+        except Exception as exc:
+            print(f"Failed to compile BDF font {font_name}: {exc}")
+    return pil_path
+
 
 def get_font(size, font_name="ttf"):
     """
     Cached font loader. Prevents massive disk I/O and glob searches
-    during the 60fps rendering loop.
+    during the rendering loop.
     """
     global _sys_fonts
+    # Config validation already restricts font names; basename is defence in depth.
+    font_name = os.path.basename(font_name)
     cache_key = f"{font_name}_{size}"
 
     if cache_key in _font_cache:
@@ -285,20 +347,10 @@ def get_font(size, font_name="ttf"):
                 break
 
         if bdf_path:
-            pil_path = f"/tmp/{font_name}.pil"
-            if not os.path.exists(pil_path):
-                from PIL import BdfFontFile
-
+            pil_path = _compiled_bdf_path(font_name, bdf_path)
+            if pil_path.exists():
                 try:
-                    with open(bdf_path, "rb") as fp:
-                        bdf_compiler = BdfFontFile.BdfFontFile(fp)
-                        bdf_compiler.save(pil_path)
-                except Exception:
-                    pass
-
-            if os.path.exists(pil_path):
-                try:
-                    font = ImageFont.load(pil_path)
+                    font = ImageFont.load(str(pil_path))
                     _font_cache[cache_key] = font
                     return font
                 except Exception:
@@ -315,14 +367,14 @@ def get_font(size, font_name="ttf"):
             except Exception:
                 pass
 
-    # 2. Try standard system paths
+    # 3. Try standard system paths
     paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
         "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
     ]
 
-    # 3. Cache system fonts list lazily if needed
+    # Cache system fonts list lazily if needed
     if _sys_fonts is None:
         _sys_fonts = glob.glob("/usr/share/fonts/truetype/**/*.ttf", recursive=True)
 

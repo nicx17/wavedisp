@@ -14,3 +14,12 @@ def draw_spotify(fb, state):
             fb.img.paste(img, (0, 0))
         except Exception:
             pass
+
+
+def frame_key(state, ctx):
+    # New album art arrives as a new config version, which forces a redraw.
+    return 0
+
+
+def draw(fb, state, ctx):
+    draw_spotify(fb, state)

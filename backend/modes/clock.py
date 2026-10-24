@@ -47,3 +47,12 @@ def draw_clock(fb, font, state, now):
         show_ss=getattr(state, "show_ss", True),
         show_colons=getattr(state, "show_colons", True),
     )
+
+
+def frame_key(state, ctx):
+    # Without milliseconds the clock only changes once per second.
+    return None if state.show_ms else int(ctx.now)
+
+
+def draw(fb, state, ctx):
+    draw_clock(fb, None, state, time.localtime(ctx.now))

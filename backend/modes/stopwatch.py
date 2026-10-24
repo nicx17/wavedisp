@@ -56,3 +56,11 @@ def draw_stopwatch(fb, font, state, now):
         getattr(state, "sw_ms_position", "inline"),
         show_hh=bool(sw_h_str),
     )
+
+
+def frame_key(state, ctx):
+    return None if getattr(state, "sw_state", "stopped") == "running" else "stopped"
+
+
+def draw(fb, state, ctx):
+    draw_stopwatch(fb, None, state, None)

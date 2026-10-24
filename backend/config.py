@@ -1,83 +1,132 @@
 """
-Global Configuration State Manager for WaveDisp.
+Configuration schema, defaults and persistence for WaveDisp.
 
 ARCHITECTURE OVERVIEW:
-This module provides the default configuration state.
-Persistence is handled through save_config, and API interaction uses save_debounced.
-State is passed between processes using multiprocessing.Manager().dict().
+`PublicConfig` is the schema the API exposes and accepts. `StoredConfig` adds the
+private keys that are persisted but never returned to clients (the Spotify client
+secret). Every config that enters the system (config.json at boot, presets when
+they are loaded, API writes) passes through these models, so the render process can
+trust the values it receives.
+
+`sanitize_config` is the lenient path used for data already on disk: invalid keys
+fall back to their defaults instead of failing, so a stale or hand-edited
+config.json can never stop the service from booting.
 """
 
+import copy
 import json
 import os
 import threading
-import time
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from backend.settings import env, resolve_path
 
 CONFIG_FILE = resolve_path(env("WAVEDISP_CONFIG_FILE", "backend/config.json"))
 
+MODES = (
+    "off",
+    "clock",
+    "stopwatch",
+    "warning",
+    "smiley",
+    "alarm",
+    "rain",
+    "life",
+    "badapple",
+    "qrcode",
+    "draw",
+    "spotify",
+)
+PRESET_SLOTS = tuple(f"slot_{i}" for i in range(1, 11))
+
+Mode = Literal[MODES]
+Slot = Literal[PRESET_SLOTS]
+Position = Annotated[int, Field(ge=-64, le=128)]
+Gap = Annotated[int, Field(ge=-16, le=32)]
+Channel = Annotated[int, Field(ge=0, le=255)]
+CssColor = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{3,8}$")]
+# Bare file names only: font_file ends up in filesystem paths.
+FontFile = Annotated[
+    str, StringConstraints(pattern=r"^(ttf|[A-Za-z0-9_-]+\.(bdf|ttf))$", max_length=64)
+]
+DrawCoord = Annotated[str, StringConstraints(pattern=r"^\d{1,2},\d{1,2}$")]
+HexColor = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{6}$")]
+MsPosition = Literal["inline", "above", "below"]
+
 
 class ColorModel(BaseModel):
-    r: int
-    g: int
-    b: int
+    r: Channel
+    g: Channel
+    b: Channel
 
 
-class ConfigModel(BaseModel):
-    mode: str
-    brightness: int
+class ScheduleModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: Annotated[str, Field(max_length=64)] = ""
+    time: Annotated[str, StringConstraints(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
+    days: Annotated[list[Annotated[int, Field(ge=0, le=6)]], Field(max_length=7)]
+    preset_slot: Slot
+    enabled: bool = True
+
+
+class PublicConfig(BaseModel):
+    mode: Mode
+    brightness: Annotated[int, Field(ge=1, le=100)]
     show_grid: bool
-    gpio_slowdown: int
-    hardware_mapping: str
+    gpio_slowdown: Annotated[int, Field(ge=0, le=5)]
+    hardware_mapping: Literal[
+        "regular", "adafruit-hat", "adafruit-hat-pwm", "regular-pi1"
+    ]
 
     # Clock
     color_h: ColorModel
     color_m: ColorModel
     color_s: ColorModel
     color_ms: ColorModel
-    pos_x: int
-    pos_y: int
+    pos_x: Position
+    pos_y: Position
     show_hh: bool
     show_mm: bool
     show_ss: bool
     show_colons: bool
-    pos_hh_x: int
-    pos_hh_y: int
-    pos_mm_x: int
-    pos_mm_y: int
-    pos_ss_x: int
-    pos_ss_y: int
-    font_file: str
-    clock_size: int
-    clock_thickness: int
+    pos_hh_x: Position
+    pos_hh_y: Position
+    pos_mm_x: Position
+    pos_mm_y: Position
+    pos_ss_x: Position
+    pos_ss_y: Position
+    font_file: FontFile
+    clock_size: Annotated[int, Field(ge=4, le=64)]
+    clock_thickness: Annotated[int, Field(ge=1, le=8)]
     format_12h: bool
     show_ms: bool
-    clock_layout: str
-    ms_position: str
-    gap_x: int
-    gap_y: int
+    clock_layout: Literal["single", "stacked", "manual"]
+    ms_position: MsPosition
+    gap_x: Gap
+    gap_y: Gap
 
     # Stopwatch
     show_stopwatch: bool
-    sw_pos_x: int
-    sw_pos_y: int
+    sw_pos_x: Position
+    sw_pos_y: Position
     sw_show_hours: bool
-    sw_ms_position: str
+    sw_ms_position: MsPosition
     color_sw_h: ColorModel
     color_sw_m: ColorModel
     color_sw_s: ColorModel
     color_sw_ms: ColorModel
-    sw_state: str
-    sw_start_time: float
-    sw_elapsed: float
+    sw_state: Literal["running", "stopped"]
+    sw_start_time: Annotated[float, Field(ge=0)]
+    sw_elapsed: Annotated[float, Field(ge=0)]
 
     # Warning
     warning_color: ColorModel
-    warning_thickness: int
-    warning_blink_speed: int
-    warning_size: int
+    warning_thickness: Annotated[int, Field(ge=1, le=20)]
+    warning_blink_speed: Annotated[int, Field(ge=0, le=100)]
+    warning_size: Annotated[int, Field(ge=4, le=64)]
 
     # Smiley
     smiley_face_color: ColorModel
@@ -87,58 +136,81 @@ class ConfigModel(BaseModel):
 
     # Rain
     rain_color: ColorModel
-    rain_speed: int
+    rain_speed: Annotated[int, Field(ge=1, le=100)]
 
     # Life
     life_color: ColorModel
-    life_speed: int
+    life_speed: Annotated[int, Field(ge=0, le=20)]
 
     # Alarm
-    alarm_speed: int
+    alarm_speed: Annotated[int, Field(ge=0, le=10)]
 
     # Bad Apple
     badapple_invert: bool
 
     # QR Code
-    qr_data: str
-    qr_error_correction: str
+    qr_data: Annotated[str, Field(max_length=2048)]
+    qr_error_correction: Literal["L", "M", "Q", "H"]
     qr_color_fg: ColorModel
     qr_color_bg: ColorModel
-    qr_pos_x: int
-    qr_pos_y: int
-    qr_size: int
-    qr_border: int
+    qr_pos_x: Position
+    qr_pos_y: Position
+    qr_size: Annotated[int, Field(ge=1, le=64)]
+    qr_border: Annotated[int, Field(ge=0, le=10)]
     qr_use_micro: bool
     qr_wobble: bool
-    qr_size_mode: str
+    qr_size_mode: Literal["auto", "stretch", "manual"]
 
     # Draw Mode
-    draw_data: dict[str, str]
+    draw_data: Annotated[dict[DrawCoord, HexColor], Field(max_length=64 * 64)]
     draw_color_bg: ColorModel
 
-    # Spotify
-    spotify_client_id: str
-    spotify_client_secret: str
+    # Spotify (read-only through the config API; see READ_ONLY_KEYS)
+    spotify_client_id: Annotated[str, Field(max_length=256)]
     spotify_linked: bool
 
     # Presets
-    presets: dict[str, dict]
-    preset_names: dict[str, str]
+    presets: dict[Slot, dict]
+    preset_names: dict[Slot, Annotated[str, Field(max_length=32)]]
 
     # UI Theme
-    ui_light_bg: str
-    ui_light_panel: str
-    ui_light_accent: str
-    ui_light_text: str
-    ui_dark_bg: str
-    ui_dark_panel: str
-    ui_dark_accent: str
-    ui_dark_text: str
-    ui_light_border: str
-    ui_dark_border: str
+    ui_light_bg: CssColor
+    ui_light_panel: CssColor
+    ui_light_accent: CssColor
+    ui_light_text: CssColor
+    ui_dark_bg: CssColor
+    ui_dark_panel: CssColor
+    ui_dark_accent: CssColor
+    ui_dark_text: CssColor
+    ui_light_border: CssColor
+    ui_dark_border: CssColor
 
     # Scheduling
-    schedules: list[dict]
+    schedules: Annotated[list[ScheduleModel], Field(max_length=100)]
+
+
+class StoredConfig(PublicConfig):
+    spotify_client_secret: Annotated[str, Field(max_length=256)]
+
+
+# Kept for backwards compatibility with code importing the old name.
+ConfigModel = PublicConfig
+
+PUBLIC_KEYS = frozenset(PublicConfig.model_fields)
+STORED_KEYS = frozenset(StoredConfig.model_fields)
+# Only changed through the dedicated /api/spotify/* endpoints.
+READ_ONLY_KEYS = frozenset({"spotify_client_id", "spotify_linked"})
+# Device-level state that belongs to the device, not to a preset.
+NON_PRESET_KEYS = frozenset(
+    {
+        "presets",
+        "preset_names",
+        "schedules",
+        "spotify_client_id",
+        "spotify_client_secret",
+        "spotify_linked",
+    }
+)
 
 
 DEFAULT_CONFIG = {
@@ -214,30 +286,8 @@ DEFAULT_CONFIG = {
     "spotify_client_id": "",
     "spotify_client_secret": "",
     "spotify_linked": False,
-    "presets": {
-        "slot_1": {},
-        "slot_2": {},
-        "slot_3": {},
-        "slot_4": {},
-        "slot_5": {},
-        "slot_6": {},
-        "slot_7": {},
-        "slot_8": {},
-        "slot_9": {},
-        "slot_10": {},
-    },
-    "preset_names": {
-        "slot_1": "Slot 1",
-        "slot_2": "Slot 2",
-        "slot_3": "Slot 3",
-        "slot_4": "Slot 4",
-        "slot_5": "Slot 5",
-        "slot_6": "Slot 6",
-        "slot_7": "Slot 7",
-        "slot_8": "Slot 8",
-        "slot_9": "Slot 9",
-        "slot_10": "Slot 10",
-    },
+    "presets": {slot: {} for slot in PRESET_SLOTS},
+    "preset_names": {slot: f"Slot {slot[5:]}" for slot in PRESET_SLOTS},
     "ui_light_bg": "#ffde00",
     "ui_light_panel": "#f4f4f0",
     "ui_light_accent": "#ffde00",
@@ -252,100 +302,130 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config():
-    data = DEFAULT_CONFIG.copy()
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                saved_data = json.load(f)
-            data.update(saved_data)
-        except Exception as e:
-            print("Failed to load config:", e)
+def defaults():
+    """Return a fresh deep copy of the defaults (safe to mutate)."""
+    return copy.deepcopy(DEFAULT_CONFIG)
 
-    # Legacy migration: Stopwatch is now its own mode
+
+def validate_config(data):
+    """Strictly validate a complete stored config. Raises ValidationError."""
+    return StoredConfig(**data).model_dump()
+
+
+def sanitize_config(data, fallback=None):
+    """
+    Leniently coerce `data` into a valid stored config.
+
+    Unknown keys are dropped, and every key that fails validation is reset to its
+    value in `fallback` (the defaults when omitted). Never raises.
+    """
+    base = fallback if fallback is not None else DEFAULT_CONFIG
+    merged = copy.deepcopy(base)
+    merged.update({k: copy.deepcopy(v) for k, v in data.items() if k in STORED_KEYS})
+
+    used_fallback = set()
+    for _ in range(3):
+        try:
+            return validate_config(merged)
+        except ValidationError as exc:
+            for key in {err["loc"][0] for err in exc.errors() if err["loc"]}:
+                # Try the fallback value first, then the factory default.
+                if key in used_fallback or key not in base:
+                    merged[key] = copy.deepcopy(DEFAULT_CONFIG[key])
+                else:
+                    print(f"[config] Invalid value for '{key}', reverting it.")
+                    merged[key] = copy.deepcopy(base[key])
+                    used_fallback.add(key)
+    return validate_config(defaults())
+
+
+def preset_payload(state):
+    """Extract the part of a config that belongs in a preset."""
+    return {k: copy.deepcopy(v) for k, v in state.items() if k not in NON_PRESET_KEYS}
+
+
+def migrate_legacy(data):
+    """In-place upgrades for configs written by older versions."""
+    # Stopwatch used to be an overlay on the clock; it is now its own mode.
     if data.get("mode") == "clock" and data.get("show_stopwatch") is True:
         data["mode"] = "stopwatch"
-
-    if "presets" in data:
-        for slot, preset_data in data["presets"].items():
-            if isinstance(preset_data, dict):
-                if (
-                    preset_data.get("mode") == "clock"
-                    and preset_data.get("show_stopwatch") is True
-                ):
-                    preset_data["mode"] = "stopwatch"
-
+    for preset in (data.get("presets") or {}).values():
+        if (
+            isinstance(preset, dict)
+            and preset.get("mode") == "clock"
+            and preset.get("show_stopwatch") is True
+        ):
+            preset["mode"] = "stopwatch"
     return data
 
 
+def load_config():
+    saved = {}
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if not isinstance(saved, dict):
+                raise TypeError("config root is not an object")
+        except Exception as e:
+            print("Failed to load config:", e)
+            saved = {}
+    return sanitize_config(migrate_legacy(saved))
+
+
+_write_lock = threading.Lock()
+
+
 def save_config(state_dict):
-    # Filter out private keys and non-serializable byte buffers
-    data = {
-        k: v
-        for k, v in state_dict.items()
-        if not k.startswith("_") and k != "spotify_image_bytes"
-    }
-
-    # Sanitize presets to ensure no bytes or private variables are saved
-    if "presets" in data:
-        clean_presets = {}
-        for slot, preset_data in data["presets"].items():
-            if isinstance(preset_data, dict):
-                clean_presets[slot] = {
-                    k: v
-                    for k, v in preset_data.items()
-                    if not k.startswith("_") and k != "spotify_image_bytes"
-                }
-        data["presets"] = clean_presets
-    try:
-        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = CONFIG_FILE.with_suffix(CONFIG_FILE.suffix + ".tmp")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp_file, CONFIG_FILE)
-    except Exception as e:
-        print("Failed to save config:", e)
+    """Atomically write the config to disk (temp file + fsync + rename)."""
+    data = {k: v for k, v in state_dict.items() if k in STORED_KEYS}
+    with _write_lock:
+        try:
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = CONFIG_FILE.with_suffix(CONFIG_FILE.suffix + ".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, CONFIG_FILE)
+        except Exception as e:
+            print("Failed to save config:", e)
 
 
-_save_timer = None
-
-
-def save_debounced(state_dict, delay=0.5):
-    global _save_timer
-    if _save_timer is not None:
-        _save_timer.cancel()
-    _save_timer = threading.Timer(delay, save_config, args=(dict(state_dict),))
-    _save_timer.start()
-
-
-def apply_preset(shared_state, target_preset: dict):
+class DebouncedSaver:
     """
-    Applies a preset dictionary to the shared_state.
-    Must be called while holding shared_lock.
+    Coalesces bursts of changes into a single SD card write.
+
+    `snapshot_fn` is called when the timer fires, so the write always reflects the
+    latest state rather than the state at the time the save was requested.
     """
-    if not target_preset:
-        return False
 
-    keys_to_preserve = [
-        "presets",
-        "preset_names",
-        "schedules",
-        "spotify_client_id",
-        "spotify_client_secret",
-        "spotify_linked",
-        "spotify_image_bytes",
-    ]
-    preserved = {k: shared_state.get(k) for k in keys_to_preserve}
-    private_vars = {k: v for k, v in shared_state.items() if k.startswith("_")}
+    def __init__(self, snapshot_fn, delay=0.5, save_fn=save_config):
+        self._snapshot_fn = snapshot_fn
+        self._save_fn = save_fn
+        self._delay = delay
+        self._lock = threading.Lock()
+        self._timer = None
 
-    new_state = {k: v for k, v in DEFAULT_CONFIG.items() if k not in keys_to_preserve}
-    new_state.update(target_preset)
-    new_state.update({k: v for k, v in preserved.items() if v is not None})
-    new_state.update(private_vars)
-    new_state["_last_updated"] = time.time()
+    def request(self):
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self._delay, self._fire)
+            self._timer.daemon = True
+            self._timer.start()
 
-    shared_state.clear()
-    shared_state.update(new_state)
-    return True
+    def _fire(self):
+        with self._lock:
+            self._timer = None
+        self._save_fn(self._snapshot_fn())
+
+    def flush(self):
+        """Write immediately if a save is pending (used on shutdown)."""
+        with self._lock:
+            pending = self._timer is not None
+            if pending:
+                self._timer.cancel()
+                self._timer = None
+        if pending:
+            self._save_fn(self._snapshot_fn())

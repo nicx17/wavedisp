@@ -37,7 +37,11 @@ echo "[2/4] Preparing remote directories..."
 ssh "${REMOTE}" "mkdir -p '${PI_APP_DIR}/backend' '${PI_APP_DIR}/scripts' '${PI_APP_DIR}/dashboard/dist' '${PI_APP_DIR}/certs'"
 
 echo "[3/4] Copying project files..."
-rsync -a --exclude="__pycache__" --exclude="*.pyc" backend/ "${REMOTE}:${PI_APP_DIR}/backend/"
+# Device-local state (config, Spotify tokens, compiled fonts) is never overwritten.
+rsync -a --exclude="__pycache__" --exclude="*.pyc" \
+  --exclude="config.json" --exclude="config.json.tmp" \
+  --exclude=".spotify_caches/" --exclude=".font_cache/" \
+  backend/ "${REMOTE}:${PI_APP_DIR}/backend/"
 rsync -a --exclude="__pycache__" --exclude="*.pyc" scripts/ "${REMOTE}:${PI_APP_DIR}/scripts/"
 rsync -a dashboard/dist/ "${REMOTE}:${PI_APP_DIR}/dashboard/dist/"
 rsync -a .env.example "${REMOTE}:${PI_APP_DIR}/.env.example"

@@ -18,13 +18,18 @@ http://<wavedisp-host>:5000/docs
 - `POST /api/config` replaces the full public config.
 - `PATCH /api/config` updates only the keys you send and is the preferred endpoint for automations.
 - HTML dashboard files are served with no-cache headers; content-hashed JS/CSS assets can still be cached normally.
-- The API currently has no built-in authentication. Keep it on a trusted LAN, behind a VPN, or behind a reverse proxy with auth.
+- Every write is validated against the full config schema. Invalid values, unknown keys, and read-only keys are rejected with `422` and nothing is applied.
+- `spotify_client_id` and `spotify_linked` are read-only through the config endpoints; use the `/api/spotify/*` endpoints. The Spotify client secret is never returned.
+- Successful writes return `{"status": "success", "version": <n>}`. `GET /api/config` returns the same number in the `X-Config-Version` header.
+- Browser requests that change state must come from the dashboard's own origin (`403` otherwise). Requests without an `Origin` header, such as curl or Home Assistant, are not affected. Extra origins can be allowed with `WAVEDISP_CORS_ORIGINS`.
+- The API has no built-in authentication. Keep it on a trusted LAN, behind a VPN, or behind a reverse proxy with auth.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/config` | Return the active matrix configuration. |
+| `GET` | `/api/version` | Return the config version; it increases on every change. Poll this to detect changes cheaply. |
 | `POST` | `/api/config` | Replace the full matrix configuration. |
 | `PATCH` | `/api/config` | Update one or more config keys. |
 | `GET` | `/api/stream` | MJPEG framebuffer preview stream. |
@@ -35,7 +40,9 @@ http://<wavedisp-host>:5000/docs
 | `POST` | `/api/spotify/callback` | Complete Spotify OAuth linking. |
 | `POST` | `/api/spotify/unlink` | Clear Spotify link state. |
 
-Preset slots are named `slot_1` through `slot_10`.
+Preset slots are named `slot_1` through `slot_10`. Unknown or empty slots return `404`.
+
+Stopwatch actions are `start`, `stop`, and `reset`; anything else returns `422`.
 
 ## Common Config Keys
 

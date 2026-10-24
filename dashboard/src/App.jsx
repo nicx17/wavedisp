@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Clock,
   Calendar,
@@ -50,7 +50,13 @@ const diffConfig = (previous, next) => {
   );
 };
 
-function PresetsPanel({ config, updateConfig, activePreset, setActivePreset }) {
+function PresetsPanel({
+  config,
+  updateConfig,
+  refreshConfig,
+  activePreset,
+  setActivePreset,
+}) {
   const [loading, setLoading] = useState(false);
   const slots = Array.from({ length: 10 }, (_, i) => i + 1);
 
@@ -62,9 +68,7 @@ function PresetsPanel({ config, updateConfig, activePreset, setActivePreset }) {
       });
       const data = await res.json();
       if (data.status === "success") {
-        const cfgRes = await fetch("/api/config");
-        const newConfig = await cfgRes.json();
-        updateConfig(newConfig, "server_refresh");
+        await refreshConfig();
       }
     } catch (err) {
       console.error(err);
@@ -80,9 +84,7 @@ function PresetsPanel({ config, updateConfig, activePreset, setActivePreset }) {
       });
       const data = await res.json();
       if (data.status === "success") {
-        const cfgRes = await fetch("/api/config");
-        const newConfig = await cfgRes.json();
-        updateConfig(newConfig, "preset_load");
+        await refreshConfig();
         setActivePreset(slotId);
       }
     } catch (err) {
@@ -424,6 +426,12 @@ function App() {
   const [isDrawing, setIsDrawing] = useState(false);
   const updateTimeoutRef = useRef(null);
   const pendingConfigRef = useRef(null);
+  const configRef = useRef(config);
+  const knownVersionRef = useRef(null);
+  const lastLocalEditRef = useRef(0);
+  // Spotify app credentials stay in the browser until linking; the server never
+  // sends the secret back.
+  const [spotifyCreds, setSpotifyCreds] = useState({ id: "", secret: "" });
 
   const [qrPayload, setQrPayload] = useState({
     type: "text",
@@ -553,15 +561,56 @@ function App() {
     localStorage.setItem("showPreview", showPreview);
   }, [showPreview]);
 
-  useEffect(() => {
-    fetch("/api/config")
-      .then((res) => res.json())
-      .then((data) => setConfig(data))
-      .catch((err) => console.error("Failed to load config:", err));
+  // Apply a GET /api/config response, remembering its version for change detection.
+  const applyServerConfig = useCallback(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const version = Number(res.headers.get("X-Config-Version"));
+    const data = await res.json();
+    if (version) knownVersionRef.current = version;
+    configRef.current = data;
+    setConfig(data);
+    return data;
   }, []);
 
+  const refreshConfig = useCallback(
+    () => fetch("/api/config").then(applyServerConfig),
+    [applyServerConfig],
+  );
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then(applyServerConfig)
+      .catch((err) => console.error("Failed to load config:", err));
+  }, [applyServerConfig]);
+
+  // Pick up changes made elsewhere (scheduler, other devices, automations), but
+  // never while the user is mid-edit.
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (
+        document.hidden ||
+        pendingConfigRef.current ||
+        Date.now() - lastLocalEditRef.current < 2000
+      ) {
+        return;
+      }
+      try {
+        const { version } = await (await fetch("/api/version")).json();
+        if (knownVersionRef.current !== null && version !== knownVersionRef.current) {
+          await refreshConfig();
+        }
+      } catch {
+        // Device offline or restarting; try again on the next tick.
+      }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [refreshConfig]);
+
   const updateConfig = (newConfig, source = null) => {
-    const patch = diffConfig(config, newConfig);
+    // Diff against the ref, not the render closure: several events (e.g. drawing)
+    // can fire before React re-renders.
+    const patch = diffConfig(configRef.current, newConfig);
+    configRef.current = newConfig;
     setConfig(newConfig);
     if (source !== "preset_load" && source !== "preset_rename") {
       setActivePreset(null);
@@ -575,20 +624,34 @@ function App() {
       return;
     }
 
+    lastLocalEditRef.current = Date.now();
     pendingConfigRef.current = {
       ...(pendingConfigRef.current || {}),
       ...patch,
     };
 
     if (!updateTimeoutRef.current) {
-      updateTimeoutRef.current = setTimeout(() => {
-        fetch("/api/config", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(pendingConfigRef.current),
-        }).catch((err) => console.error("Update failed:", err));
+      updateTimeoutRef.current = setTimeout(async () => {
+        const body = pendingConfigRef.current;
         pendingConfigRef.current = null;
         updateTimeoutRef.current = null;
+        try {
+          const res = await fetch("/api/config", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            knownVersionRef.current = data.version;
+          } else {
+            // Rejected by validation: show what the device is really doing.
+            console.error("Update rejected:", data.detail);
+            await refreshConfig();
+          }
+        } catch (err) {
+          console.error("Update failed:", err);
+        }
       }, 30); // 33 FPS Network Throttle
     }
   };
@@ -604,9 +667,10 @@ function App() {
 
     if (x >= 0 && x < 64 && y >= 0 && y < 64) {
       const coord = `${x},${y}`;
-      if (config.draw_data?.[coord] === drawColor) return;
-      const nextData = { ...(config.draw_data || {}), [coord]: drawColor };
-      updateConfig({ ...config, draw_data: nextData });
+      const current = configRef.current;
+      if (current.draw_data?.[coord] === drawColor) return;
+      const nextData = { ...(current.draw_data || {}), [coord]: drawColor };
+      updateConfig({ ...current, draw_data: nextData });
     }
   };
 
@@ -624,11 +688,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action }),
     })
-      .then(() => {
-        fetch("/api/config")
-          .then((res) => res.json())
-          .then((data) => setConfig(data));
-      })
+      .then(() => refreshConfig())
       .catch((err) => console.error("Action failed:", err));
   };
 
@@ -2956,24 +3016,26 @@ function App() {
                     <input
                       type="text"
                       placeholder="Client ID"
-                      value={config.spotify_client_id || ""}
+                      value={
+                        config.spotify_linked
+                          ? config.spotify_client_id || ""
+                          : spotifyCreds.id
+                      }
+                      disabled={config.spotify_linked}
                       onChange={(e) =>
-                        updateConfig({
-                          ...config,
-                          spotify_client_id: e.target.value,
-                        })
+                        setSpotifyCreds({ ...spotifyCreds, id: e.target.value })
                       }
                       style={{ marginBottom: "8px" }}
                     />
                     <input
                       type="password"
-                      placeholder="Client Secret"
-                      value={config.spotify_client_secret || ""}
+                      placeholder={
+                        config.spotify_linked ? "Stored on device" : "Client Secret"
+                      }
+                      value={config.spotify_linked ? "" : spotifyCreds.secret}
+                      disabled={config.spotify_linked}
                       onChange={(e) =>
-                        updateConfig({
-                          ...config,
-                          spotify_client_secret: e.target.value,
-                        })
+                        setSpotifyCreds({ ...spotifyCreds, secret: e.target.value })
                       }
                     />
                   </div>
@@ -3003,8 +3065,8 @@ function App() {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                              client_id: config.spotify_client_id,
-                              client_secret: config.spotify_client_secret,
+                              client_id: spotifyCreds.id,
+                              client_secret: spotifyCreds.secret,
                             }),
                           });
                           const data = await res.json();
@@ -3043,14 +3105,15 @@ function App() {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
-                                client_id: config.spotify_client_id,
-                                client_secret: config.spotify_client_secret,
+                                client_id: spotifyCreds.id,
+                                client_secret: spotifyCreds.secret,
                                 url: url,
                               }),
                             });
                             const data = await res.json();
                             if (data.status === "success") {
-                              updateConfig({ ...config, spotify_linked: true });
+                              setSpotifyCreds({ id: "", secret: "" });
+                              await refreshConfig();
                               document.getElementById(
                                 "spotify_callback_input",
                               ).value = "";
@@ -3094,12 +3157,7 @@ function App() {
                     <button
                       onClick={async () => {
                         await fetch("/api/spotify/unlink", { method: "POST" });
-                        updateConfig({
-                          ...config,
-                          spotify_linked: false,
-                          spotify_client_id: "",
-                          spotify_client_secret: "",
-                        });
+                        await refreshConfig();
                       }}
                       className="mode-btn"
                     >
@@ -3190,6 +3248,7 @@ function App() {
           <PresetsPanel
             config={config}
             updateConfig={updateConfig}
+            refreshConfig={refreshConfig}
             activePreset={activePreset}
             setActivePreset={setActivePreset}
           />

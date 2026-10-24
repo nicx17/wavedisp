@@ -1,192 +1,266 @@
 """
-Core matrix controller loop and hardware memory manager.
+Matrix render process.
 
 ARCHITECTURE OVERVIEW:
-This module runs in a dedicated background thread (started by `start_matrix_thread`), completely isolated from the FastAPI application thread.
-It polls the global `config_state` in a thread-safe manner using `state_lock` to determine what to draw next.
+This module runs in a dedicated child process (started by `start_matrix_process`),
+isolated from the FastAPI process so that request handling never competes with the
+frame loop for the GIL. It receives render settings from the main process through a
+shared-memory `SnapshotChannel` and returns the latest frame through a
+`FrameChannel` for the dashboard preview.
 
-MEMORY MANAGEMENT & HARDWARE:
-The hzeller `rgbmatrix` library interacts directly with Raspberry Pi hardware (GPIO, DMA, PWM).
-When hardware-specific settings change (like `gpio_slowdown` or `hardware_mapping`), the underlying C++ pointer (`RGBMatrix`) MUST be deleted and recreated.
-This script automatically detects when these properties drift from the active settings and safely triggers `del matrix` and `del offscreen_canvas` before re-initializing to prevent segmentation faults and kernel panics.
+FRAME SKIPPING:
+Each mode reports a `frame_key` (see backend/modes/__init__.py). A frame is only
+drawn and pushed to the panel when (config version, effective brightness, mode,
+frame key) changes. The hzeller driver keeps refreshing the last swapped canvas on
+its own real-time thread, so skipping a frame is invisible.
 
-FRAME PACING:
-Instead of manual `time.sleep()`, frame pacing is naturally regulated by `SwapOnVSync()`, which blocks until the LED matrix has finished refreshing its DMA buffers. This prevents screen tearing and stuttering.
+BRIGHTNESS & FADES:
+hzeller applies brightness when pixels are written (SetImage), not to what is
+already on the panel, so brightness changes and fades only take effect on a redraw.
+Mode changes fade out over a few frames, switch, and fade back in.
+
+HARDWARE:
+When `gpio_slowdown` or `hardware_mapping` change, the RGBMatrix is deleted and
+recreated. If the new settings fail, the previous ones are restored.
 """
 
-# pylint: disable=too-many-locals,too-many-branches,too-many-statements,bare-except,invalid-name,global-statement
+# pylint: disable=too-many-instance-attributes,broad-exception-caught
 
-import io
-import queue
 import signal
-import threading
 import time
+import traceback
 import types
 
-from rgbmatrix import RGBMatrix, RGBMatrixOptions
-
-import backend.modes.bad_apple as bad_apple_mod
-from backend.modes.alarm import draw_alarm
-from backend.modes.bad_apple import draw_bad_apple
-from backend.modes.clock import draw_clock
-from backend.modes.draw_mode import draw_canvas
+from backend.modes import (
+    TICK_HZ,
+    FrameContext,
+    alarm,
+    bad_apple,
+    clock,
+    draw_mode,
+    life,
+    qrcode_mode,
+    rain,
+    smiley,
+    spotify_mode,
+    stopwatch,
+    warning,
+)
 from backend.modes.grid import draw_layout_grid
-from backend.modes.life import draw_game_of_life
-from backend.modes.qrcode_mode import draw_qrcode
-from backend.modes.rain import draw_matrix_rain
-from backend.modes.smiley import draw_smiley
-from backend.modes.spotify_mode import draw_spotify
-from backend.modes.stopwatch import draw_stopwatch
-from backend.modes.warning import draw_warning
 from backend.rendering_utils import get_framebuffer
+from backend.settings import env_bool
 
-# --- STREAM WORKER THREAD ---
-stream_queue = queue.Queue(maxsize=2)
+TARGET_FPS = 120
+STREAM_FPS = 15
+FADE_SECONDS = 0.2
+
+OFF_MODE = types.SimpleNamespace(
+    draw=lambda fb, state, ctx: None, frame_key=lambda s, c: 0
+)
+MODES = {
+    "off": OFF_MODE,
+    "clock": clock,
+    "stopwatch": stopwatch,
+    "warning": warning,
+    "smiley": smiley,
+    "alarm": alarm,
+    "rain": rain,
+    "life": life,
+    "badapple": bad_apple,
+    "qrcode": qrcode_mode,
+    "draw": draw_mode,
+    "spotify": spotify_mode,
+}
 
 
-def stream_worker(shared_state):
-    while True:
+def load_driver():
+    """Return the (RGBMatrix, RGBMatrixOptions) classes to use."""
+    if env_bool("WAVEDISP_EMULATE_MATRIX", False):
+        from backend import matrix_emulator as driver  # pylint: disable=import-outside-toplevel
+    else:
+        import rgbmatrix as driver  # pylint: disable=import-outside-toplevel,import-error
+    return driver.RGBMatrix, driver.RGBMatrixOptions
+
+
+class _ErrorLog:
+    """Prints each distinct error at most once per `interval` seconds."""
+
+    def __init__(self, interval=30.0):
+        self.interval = interval
+        self._last = {}
+
+    def report(self, where, exc):
+        key = (where, type(exc).__name__, str(exc))
+        now = time.monotonic()
+        if now - self._last.get(key, -self.interval) >= self.interval:
+            self._last[key] = now
+            print(f"[matrix] Error in {where}: {exc!r}")
+            traceback.print_exc()
+
+
+class Renderer:
+    def __init__(self, snapshots, frames, driver=None):
+        self.snapshots = snapshots
+        self.frames = frames
+        self.RGBMatrix, self.RGBMatrixOptions = driver or load_driver()
+        self.fb = get_framebuffer()
+        self.errors = _ErrorLog()
+
+        self.state = None
+        self.snapshot_seq = -1
+        self._receive_snapshot()
+
+        self.options = self.RGBMatrixOptions()
+        self.options.rows = 64
+        self.options.cols = 64
+        self.options.chain_length = 1
+        self.options.parallel = 1
+        self.options.drop_privileges = False
+        self.hw = None
+        self.failed_hw = None
+        self.matrix = None
+        self.canvas = None
+        self._apply_hardware(self.state.gpio_slowdown, self.state.hardware_mapping)
+
+        self.current_mode = self.state.mode
+        self.mode_started = time.time()
+        self.level = 0.0  # fade level, 0 = dark, 1 = full brightness
+        self.last_now = self.mode_started
+        self.last_key = None
+        self.last_tick = 0
+        self.stream_pending = False
+        self.last_stream = 0.0
+        self.frames_drawn = 0
+
+    # ----- setup -------------------------------------------------------------
+
+    def _receive_snapshot(self):
+        seq = self.snapshots.seq
+        if seq == self.snapshot_seq:
+            return False
+        seq, snapshot = self.snapshots.receive()
+        if snapshot is not None:
+            self.state = types.SimpleNamespace(**snapshot)
+            self.snapshot_seq = seq
+        return True
+
+    def _create_matrix(self, slowdown, mapping):
+        self.options.gpio_slowdown = slowdown
+        self.options.hardware_mapping = mapping
+        self.matrix = self.RGBMatrix(options=self.options)
+        self.canvas = self.matrix.CreateFrameCanvas()
+        self.hw = (slowdown, mapping)
+
+    def _apply_hardware(self, slowdown, mapping):
+        target = (slowdown, mapping)
+        if target in (self.hw, self.failed_hw):
+            return
+        previous = self.hw
+        # The C++ matrix owns GPIO/DMA; it must be released before re-creating.
+        self.canvas = None
+        self.matrix = None
         try:
-            img = stream_queue.get()
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=75)
-            # Write bytes to IPC manager (blocks this thread, but not matrix loop)
-            shared_state["_framebuffer_bytes"] = buf.getvalue()
-        except Exception:
-            pass
+            self._create_matrix(slowdown, mapping)
+            self.failed_hw = None
+        except Exception as exc:
+            if previous is None:
+                raise
+            self.errors.report("hardware re-init", exc)
+            # Remember the failure so we don't retry (and re-init) every frame.
+            self.failed_hw = target
+            self._create_matrix(*previous)
+        self.last_key = None
+
+    # ----- frame loop --------------------------------------------------------
+
+    def _update_fade(self, now):
+        dt = max(0.0, now - self.last_now)
+        self.last_now = now
+        step = dt / FADE_SECONDS
+        target_mode = self.state.mode
+        if target_mode != self.current_mode:
+            self.level = max(0.0, self.level - step)
+            if self.level == 0.0:
+                self.current_mode = target_mode
+                self.mode_started = now
+                self.last_tick = 0
+                bad_apple.reset()
+        else:
+            self.level = min(1.0, self.level + step)
+        return max(1, round(self.state.brightness * self.level))
+
+    def step(self, now=None):
+        """Render one loop iteration. Returns True when a new frame was pushed."""
+        now = time.time() if now is None else now
+        self._receive_snapshot()
+        state = self.state
+        self._apply_hardware(state.gpio_slowdown, state.hardware_mapping)
+
+        brightness = self._update_fade(now)
+        mode = MODES.get(self.current_mode, OFF_MODE)
+        tick = int((now - self.mode_started) * TICK_HZ)
+        ctx = FrameContext(now=now, tick=tick, steps=max(1, tick - self.last_tick))
+
+        try:
+            mode_key = mode.frame_key(state, ctx)
+        except Exception as exc:
+            self.errors.report(f"{self.current_mode}.frame_key", exc)
+            mode_key = None
+        key = (self.snapshot_seq, brightness, self.current_mode, mode_key)
+        if mode_key is not None and key == self.last_key:
+            return False
+
+        self.fb.clear()
+        try:
+            if state.show_grid:
+                draw_layout_grid(self.fb)
+            mode.draw(self.fb, state, ctx)
+        except Exception as exc:
+            self.errors.report(f"{self.current_mode}.draw", exc)
+            self.fb.clear()
+
+        if self.matrix.brightness != brightness:
+            self.matrix.brightness = brightness
+        self.canvas.SetImage(self.fb.img)
+        self.canvas = self.matrix.SwapOnVSync(self.canvas)
+
+        self.last_key = key
+        self.last_tick = tick
+        self.stream_pending = True
+        self.frames_drawn += 1
+        return True
+
+    def publish_preview(self, now):
+        if self.stream_pending and now - self.last_stream >= 1.0 / STREAM_FPS:
+            self.frames.write(self.fb.img.tobytes())
+            self.last_stream = now
+            self.stream_pending = False
+
+    def run(self):
+        frame_time = 1.0 / TARGET_FPS
+        try:
+            while True:
+                started = time.monotonic()
+                now = time.time()
+                try:
+                    self.step(now)
+                    self.publish_preview(now)
+                except Exception as exc:
+                    self.errors.report("frame", exc)
+                    time.sleep(0.1)
+                remaining = frame_time - (time.monotonic() - started)
+                if remaining > 0:
+                    time.sleep(remaining)
+        finally:
+            if self.matrix is not None:
+                self.matrix.Clear()
 
 
-# --- MAIN LOOP ---
-def matrix_loop(shared_state, shared_lock, dirty_flag=None):
-    with shared_lock:
-        initial_slowdown = shared_state.get("gpio_slowdown", 2)
-        initial_mapping = shared_state.get("hardware_mapping", "regular")
-
-    options = RGBMatrixOptions()
-    options.rows = 64
-    options.cols = 64
-    options.chain_length = 1
-    options.parallel = 1
-    options.hardware_mapping = initial_mapping
-    options.gpio_slowdown = initial_slowdown
-    options.drop_privileges = False
-
-    matrix = RGBMatrix(options=options)
-    offscreen_canvas = matrix.CreateFrameCanvas()
-
-    current_slowdown = initial_slowdown
-    current_mapping = initial_mapping
-
-    current_mode = ""
-    frame_count = 0
-    fb = get_framebuffer()
-
-    # Target 120 FPS
-    target_frame_time = 1.0 / 120.0
-
-    # Cache for IPC optimization
-    local_last_updated = 0.0
-    state_snapshot = None
-
-    # Start the JPEG streaming background thread
-    threading.Thread(target=stream_worker, args=(shared_state,), daemon=True).start()
-
-    while True:
-        loop_start = time.time()
-
-        # Read the shared-memory dirty flag without hitting the Manager process.
-        remote_last_updated = (
-            dirty_flag.value
-            if dirty_flag is not None
-            else shared_state.get("_last_updated", 1.0)
-        )
-
-        # Only perform the expensive full dictionary IPC serialization if config changed
-        if remote_last_updated != local_last_updated or state_snapshot is None:
-            with shared_lock:
-                state_snapshot = types.SimpleNamespace(**shared_state.copy())
-            local_last_updated = remote_last_updated
-
-        target_mode = getattr(state_snapshot, "mode", "clock")
-        target_brightness = getattr(state_snapshot, "brightness", 100)
-        target_slowdown = getattr(state_snapshot, "gpio_slowdown", 2)
-        target_mapping = getattr(state_snapshot, "hardware_mapping", "regular")
-
-        if current_slowdown != target_slowdown or current_mapping != target_mapping:
-            del offscreen_canvas
-            del matrix
-
-            options.gpio_slowdown = target_slowdown
-            options.hardware_mapping = target_mapping
-
-            matrix = RGBMatrix(options=options)
-            offscreen_canvas = matrix.CreateFrameCanvas()
-
-            current_slowdown = target_slowdown
-            current_mapping = target_mapping
-
-        if current_mode != target_mode and current_mode != "":
-            for b in range(matrix.brightness, -1, -5):
-                matrix.brightness = max(0, b)
-                time.sleep(0.01)
-            current_mode = target_mode
-            bad_apple_mod.start_time_bad_apple = 0  # Reset bad apple timer
-            for b in range(0, target_brightness + 1, 5):
-                matrix.brightness = min(target_brightness, b)
-                time.sleep(0.01)
-        elif current_mode == "":
-            current_mode = target_mode
-
-        if matrix.brightness != target_brightness:
-            matrix.brightness = target_brightness
-
-        fb.clear()
-
-        if getattr(state_snapshot, "show_grid", False):
-            draw_layout_grid(fb)
-
-        if current_mode == "off":
-            pass
-        elif current_mode == "clock":
-            draw_clock(fb, None, state_snapshot, time.localtime())
-        elif current_mode == "stopwatch":
-            draw_stopwatch(fb, None, state_snapshot, time.localtime())
-        elif current_mode == "warning":
-            draw_warning(fb, frame_count, state_snapshot)
-        elif current_mode == "smiley":
-            draw_smiley(fb, frame_count, state_snapshot)
-        elif current_mode == "alarm":
-            draw_alarm(fb, frame_count, state_snapshot)
-        elif current_mode == "rain":
-            draw_matrix_rain(fb, state_snapshot)
-        elif current_mode == "life":
-            draw_game_of_life(fb, frame_count, state_snapshot)
-        elif current_mode == "badapple":
-            draw_bad_apple(fb, state_snapshot)
-        elif current_mode == "qrcode":
-            draw_qrcode(fb, state_snapshot)
-        elif current_mode == "draw":
-            draw_canvas(fb, state_snapshot)
-        elif current_mode == "spotify":
-            draw_spotify(fb, state_snapshot)
-
-        # Stream Framebuffer to Web UI at ~12 FPS
-        if frame_count % 10 == 0:
-            if not stream_queue.full():
-                # Pass a fast copy of the raw image bytes to the background thread
-                stream_queue.put(fb.img.copy())
-
-        # Push to Hardware
-        offscreen_canvas.SetImage(fb.img)
-        offscreen_canvas = matrix.SwapOnVSync(offscreen_canvas)
-        frame_count += 1
-
-        # Frame Limiting
-        elapsed = time.time() - loop_start
-        if elapsed < target_frame_time:
-            time.sleep(target_frame_time - elapsed)
+def _raise_exit(signum, frame):  # pylint: disable=unused-argument
+    raise SystemExit(0)
 
 
-def start_matrix_process(shared_state, shared_lock, dirty_flag=None):
+def start_matrix_process(snapshots, frames):
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Let parent handle KeyboardInterrupt
-    matrix_loop(shared_state, shared_lock, dirty_flag)
+    signal.signal(signal.SIGTERM, _raise_exit)  # Clear the panel on shutdown
+    Renderer(snapshots, frames).run()

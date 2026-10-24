@@ -2,8 +2,10 @@
 Freehand drawing mode for the LED matrix.
 """
 
-_cached_draw_data = None
-_cached_pixels = []
+from PIL import Image
+
+_cached_key = None
+_cached_layer = None
 
 
 def parse_draw_pixels(draw_data):
@@ -30,22 +32,39 @@ def parse_draw_pixels(draw_data):
     return pixels
 
 
+def render_layer(draw_data, bg_color):
+    """Render background + pixels into a standalone 64x64 image."""
+    layer = Image.new("RGB", (64, 64), bg_color)
+    px = layer.load()
+    for x, y, color in parse_draw_pixels(draw_data):
+        px[x, y] = color
+    return layer
+
+
+def frame_key(state, ctx):
+    return 0
+
+
 def draw_canvas(fb, state):
-    global _cached_draw_data, _cached_pixels
-    # Fill background
+    global _cached_key, _cached_layer
+    # draw_data format: {"x,y": "#RRGGBB"}
+    draw_data = getattr(state, "draw_data", {})
     bg_color = (
         state.draw_color_bg["r"],
         state.draw_color_bg["g"],
         state.draw_color_bg["b"],
     )
-    fb.draw_rect(0, 0, 64, 64, bg_color)
+    # Snapshots are replaced wholesale on every config change, so identity of the
+    # dict is a reliable (and O(1)) change check.
+    key = (id(draw_data), bg_color)
+    if key != _cached_key or _cached_layer is None:
+        _cached_key = key
+        _cached_layer = render_layer(draw_data, bg_color)
 
-    # Draw dictionary of pixels
-    # draw_data format: {"x,y": "#RRGGBB"}
-    draw_data = getattr(state, "draw_data", {})
-    if draw_data is not _cached_draw_data:
-        _cached_draw_data = draw_data
-        _cached_pixels = parse_draw_pixels(draw_data)
+    # The layer is opaque, so it replaces anything drawn underneath (e.g. the grid),
+    # matching the previous behaviour of filling the background first.
+    fb.img.paste(_cached_layer, (0, 0))
 
-    for x, y, color in _cached_pixels:
-        fb.set_pixel(x, y, color)
+
+def draw(fb, state, ctx):
+    draw_canvas(fb, state)

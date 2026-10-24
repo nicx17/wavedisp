@@ -5,6 +5,25 @@ Smiley drawing mode.
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements,bare-except,invalid-name,global-statement
 
 
+def smiley_phase(frame_count):
+    """Return (look_x, is_blinking) for the given animation tick."""
+    look_x = 0
+    cycle = frame_count % 100
+    if 20 <= cycle < 40:
+        look_x = -2
+    elif 60 <= cycle < 80:
+        look_x = 2
+    return look_x, (frame_count % 60) > 55
+
+
+def frame_key(state, ctx):
+    return smiley_phase(ctx.tick)
+
+
+def draw(fb, state, ctx):
+    draw_smiley(fb, ctx.tick, state)
+
+
 def draw_smiley(fb, frame_count, state):
     face_c = state.smiley_face_color
     cheek_c = state.smiley_cheek_color
@@ -23,14 +42,7 @@ def draw_smiley(fb, frame_count, state):
     fb.draw.ellipse([43, 34, 51, 42], fill=cheek)
 
     # Eyes
-    look_x = 0
-    cycle = frame_count % 100
-    if 20 <= cycle < 40:
-        look_x = -2
-    elif 60 <= cycle < 80:
-        look_x = 2
-
-    is_blinking = (frame_count % 60) > 55
+    look_x, is_blinking = smiley_phase(frame_count)
     if is_blinking:
         fb.draw.rectangle([20, 24, 27, 25], fill=(0, 0, 0))
         fb.draw.rectangle([36, 24, 43, 25], fill=(0, 0, 0))
