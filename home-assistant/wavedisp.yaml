@@ -1,0 +1,121 @@
+# WaveDisp for Home Assistant.
+#
+# Copy this file into <config>/packages/ and change the address on the
+# `resource:` line to your Pi. If WaveDisp runs with WAVEDISP_USE_HTTPS and a
+# self-signed cert, use https:// there and set `verify_ssl` below to false.
+# Setup steps: docs/HOME_ASSISTANT.md
+#
+# Creates:
+#   light.wavedisp         on/off and brightness ("off" is WaveDisp's off mode)
+#   select.wavedisp_mode   display mode
+#   sensor.wavedisp_status raw API mode, polled every 10 seconds
+
+# Platform-style REST sensor on purpose: the `rest:` integration debounces
+# update_entity for 10 seconds, so a second tap would show stale state.
+sensor:
+  - platform: rest
+    name: WaveDisp Status
+    unique_id: wavedisp_status
+    resource: &wavedisp_api http://wavedisp.local:5000/api/config
+    verify_ssl: &wavedisp_verify_ssl true
+    scan_interval: 10
+    timeout: 5
+    icon: mdi:dots-grid
+    value_template: "{{ value_json.mode }}"
+    json_attributes:
+      - brightness
+
+rest_command:
+  # Usage: action: rest_command.wavedisp_patch, data: {body: {mode: clock}}
+  wavedisp_patch:
+    url: *wavedisp_api
+    verify_ssl: *wavedisp_verify_ssl
+    method: patch
+    content_type: application/json
+    payload: "{{ body | to_json }}"
+    timeout: 5
+
+template:
+  # Remembers the last mode that wasn't "off" so turning the light on restores it.
+  # The start trigger catches a mode that was already showing when HA started.
+  - triggers:
+      - trigger: state
+        entity_id: sensor.wavedisp_status
+        not_to: ["off", "unknown", "unavailable"]
+      - trigger: homeassistant
+        event: start
+    sensor:
+      - name: WaveDisp Last Mode
+        unique_id: wavedisp_last_mode
+        icon: mdi:history
+        state: >
+          {% set mode = states('sensor.wavedisp_status') %}
+          {{ mode if has_value('sensor.wavedisp_status') and mode != 'off'
+             else this.state }}
+
+  - light:
+      - name: WaveDisp
+        unique_id: wavedisp_light
+        icon: mdi:dots-grid
+        availability: "{{ has_value('sensor.wavedisp_status') }}"
+        state: "{{ not is_state('sensor.wavedisp_status', 'off') }}"
+        # WaveDisp brightness is 1-100, Home Assistant's is 0-255.
+        level: >
+          {{ (state_attr('sensor.wavedisp_status', 'brightness') | int(0) * 2.55)
+             | round | int }}
+        turn_on:
+          - condition: state
+            entity_id: sensor.wavedisp_status
+            state: "off"
+          - action: rest_command.wavedisp_patch
+            data:
+              body:
+                mode: >
+                  {{ states('sensor.wavedisp_last_mode')
+                     if has_value('sensor.wavedisp_last_mode') else 'clock' }}
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.wavedisp_status
+        turn_off:
+          - action: rest_command.wavedisp_patch
+            data:
+              body:
+                mode: "off"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.wavedisp_status
+        # Dragging the slider of a light that's off only calls set_level, so it
+        # also turns the display back on.
+        set_level:
+          - action: rest_command.wavedisp_patch
+            data:
+              body:
+                brightness: "{{ [brightness_pct | round | int, 1] | max }}"
+          - action: light.turn_on
+            target:
+              entity_id: "{{ this.entity_id }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.wavedisp_status
+
+  - select:
+      - name: WaveDisp Mode
+        unique_id: wavedisp_mode
+        icon: mdi:view-grid-outline
+        availability: "{{ has_value('sensor.wavedisp_status') }}"
+        # Labels match the WaveDisp dashboard. Lowercasing a label and removing
+        # its spaces gives the API mode ("Bad Apple" -> "badapple").
+        options: >
+          {{ ['Off', 'Clock', 'Stopwatch', 'Warning', 'Smiley', 'Alarm', 'Rain',
+              'Life', 'Bad Apple', 'QR Code', 'Draw', 'Spotify'] }}
+        state: >
+          {{ states('sensor.wavedisp_status') | capitalize
+             | replace('Badapple', 'Bad Apple') | replace('Qrcode', 'QR Code') }}
+        select_option:
+          - action: rest_command.wavedisp_patch
+            data:
+              body:
+                mode: "{{ option | lower | replace(' ', '') }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.wavedisp_status

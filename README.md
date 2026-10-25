@@ -209,6 +209,10 @@ WaveDisp is designed for a trusted home network and has no login. Within that mo
 
 If the device is reachable from outside your LAN, put it behind a VPN or an authenticating reverse proxy.
 
+## Home Assistant
+
+WaveDisp can appear in Home Assistant as a light (on/off and brightness) and a mode select, with a ready-made dashboard page. See [docs/HOME_ASSISTANT.md](docs/HOME_ASSISTANT.md).
+
 ## API
 
 See [docs/API.md](docs/API.md) for the full API reference and curl examples.

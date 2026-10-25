@@ -1,0 +1,212 @@
+# WaveDisp view for a Home Assistant dashboard (sections layout).
+#
+# Needs the entities from wavedisp.yaml and Mushroom from HACS (mode tiles).
+# Add it with: Edit dashboard -> "+" (new view) -> three dots -> Edit in YAML.
+# Change the address in the heading's tap_action to your Pi.
+
+title: WaveDisp
+path: wavedisp
+icon: mdi:dots-grid
+type: sections
+max_columns: 4
+sections:
+  - type: grid
+    cards:
+      - type: heading
+        heading: WaveDisp
+        icon: mdi:dots-grid
+        # Opens the full WaveDisp dashboard for colours, layouts, drawing, etc.
+        tap_action:
+          action: url
+          url_path: http://wavedisp.local:5000
+        badges:
+          - type: entity
+            entity: select.wavedisp_mode
+      - type: tile
+        entity: light.wavedisp
+        name: Display
+        color: orange
+        features:
+          - type: light-brightness
+        grid_options:
+          columns: full
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: "Off"
+        icon: mdi:power
+        color: "{{ 'orange' if is_state(entity, 'Off') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: "Off"
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Clock
+        icon: mdi:clock-outline
+        color: "{{ 'orange' if is_state(entity, 'Clock') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Clock
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Stopwatch
+        icon: mdi:timer-outline
+        color: "{{ 'orange' if is_state(entity, 'Stopwatch') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Stopwatch
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Warning
+        icon: mdi:alert-outline
+        color: "{{ 'orange' if is_state(entity, 'Warning') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Warning
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Smiley
+        icon: mdi:emoticon-happy-outline
+        color: "{{ 'orange' if is_state(entity, 'Smiley') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Smiley
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Alarm
+        icon: mdi:bell-ring-outline
+        color: "{{ 'orange' if is_state(entity, 'Alarm') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Alarm
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Rain
+        icon: mdi:weather-pouring
+        color: "{{ 'orange' if is_state(entity, 'Rain') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Rain
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Life
+        icon: mdi:pulse
+        color: "{{ 'orange' if is_state(entity, 'Life') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Life
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Bad Apple
+        icon: mdi:filmstrip
+        color: "{{ 'orange' if is_state(entity, 'Bad Apple') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Bad Apple
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: QR Code
+        icon: mdi:qrcode
+        color: "{{ 'orange' if is_state(entity, 'QR Code') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: QR Code
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Draw
+        icon: mdi:pencil-outline
+        color: "{{ 'orange' if is_state(entity, 'Draw') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Draw
+        grid_options:
+          columns: 3
+      - type: custom:mushroom-template-card
+        entity: select.wavedisp_mode
+        primary: Spotify
+        icon: mdi:spotify
+        color: "{{ 'orange' if is_state(entity, 'Spotify') else 'disabled' }}"
+        vertical: true
+        tap_action:
+          action: perform-action
+          perform_action: select.select_option
+          target:
+            entity_id: select.wavedisp_mode
+          data:
+            option: Spotify
+        grid_options:
+          columns: 3
