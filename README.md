@@ -197,6 +197,11 @@ If the binary is missing, Bad Apple mode stays blank and logs a message instead 
    ./deploy.sh
    ```
 
+   Optional flags:
+   - `./deploy.sh --upgrade` (or `-u`): Upgrades remote Python packages to their latest versions.
+   - `./deploy.sh --skip-deps`: Skips npm dependency installation locally and pip installation on the Pi for fast code-only deploys.
+   - `./deploy.sh --skip-dashboard`: Skips building the React frontend dashboard.
+
 The script never overwrites device-local state on the Pi (`backend/config.json`, Spotify tokens, compiled fonts).
 
 ## Security
